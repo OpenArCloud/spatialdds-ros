@@ -327,10 +327,25 @@ only the earth-referencing is absent. So silence there is a legitimate
 operating mode rather than a misconfiguration, and the library should say so
 once at startup and carry on, exactly as the venue does.
 
-The alternative reading, which I do not recommend: let the anchor default to
-the frame origin at (0, 0, 0) so a `FrameTransform` is always published. That
-would make every unconfigured robot claim to be in the Gulf of Guinea, and
-the pose would still look plausible — the same failure the georeference batch
-was built to prevent.
+**The rejected alternative, kept here as the cautionary example.** Let the
+anchor default to the frame origin at (0, 0, 0) so a `FrameTransform` is
+always published. Every unconfigured robot would then claim to be in the Gulf
+of Guinea, and its pose would still look entirely plausible — no exception, no
+malformed record, nothing a schema check would catch. That is the
+silent-wrongness class wearing a default's clothing, and it is the same
+failure the venue-georeference batch was built to prevent. A default is not
+neutral when the thing being defaulted is a claim.
 
-Stopping here for the ruling, per the brief.
+**Ruled as proposed, all three rows (2026-10-19).** Refuse-to-start for
+`scene`, `entity_id` and `frame_id`; the documented-defaults set as plumbing;
+the anchor approved as the one legitimate silence, because its degradation is
+honest and visible — fully functional on the bus, not placeable on the earth,
+said once plainly.
+
+With one addendum carried into the build: **the README states the degraded
+mode's visible consequence from the consumer's side**, not only the
+operator's. A reader of the scene sees the robot's entity and its poses
+present and moving, and nothing earth-referenced — no `FrameTransform` for the
+robot's frame, so a client that wants to place it on a globe cannot, and
+should say so rather than assume. Documenting it only as "the operator did not
+set an anchor" would leave the consumer to discover the absence.
