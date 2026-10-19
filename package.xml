@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
+<package format="3">
+  <name>spatialdds_ros</name>
+  <version>0.1.0</version>
+  <description>
+    Makes a ROS 2 robot a SpatialDDS participant: its pose published as a
+    spatial.owm entity on scene-scoped topics, goto commands consumed from
+    ModelCommand and dispatched to nav2, and its presence announced — on the
+    same DDS bus ROS already runs on. A type adapter on a shared bus, not a
+    protocol gateway.
+  </description>
+  <maintainer email="fiberhog@gmail.com">James Jackson</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
