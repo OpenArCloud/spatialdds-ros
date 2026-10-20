@@ -1,1 +1,7 @@
 cyclonedds
+# The acceptance run's toolchain, not the library's runtime. `spatialdds`
+# brings the gateway the recording is served by; `mcap` writes the recording;
+# `jsonschema` validates payloads against the schemas the gateway publishes.
+spatialdds[server]==0.5.4
+mcap
+jsonschema

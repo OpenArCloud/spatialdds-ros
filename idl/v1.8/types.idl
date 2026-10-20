@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: MIT
+// SpatialDDS Common Type Aliases 1.8
+
+#ifndef SPATIAL_COMMON_TYPES_INCLUDED
+#define SPATIAL_COMMON_TYPES_INCLUDED
+
+module builtin {
+  @extensibility(APPENDABLE) struct Time {
+    int64 sec;      // seconds since UNIX epoch (UTC), int64 (no year-2038 limit)
+    uint32 nanosec; // nanoseconds [0, 1e9)
+  };
+};
+
+module spatial {
+  module common {
+    typedef double BBox2D[4];
+    // Flat 3D AABB, [min_x, min_y, min_z, max_x, max_y, max_z], for JSON/HTTP
+    // payloads (see §2.10). This is the array form; the on-bus volumetric type
+    // is the core::Aabb3 struct (min_xyz/max_xyz), NOT this typedef. The two are
+    // distinct despite the near-identical names.
+    typedef double Aabb3D[6];
+    typedef double Vec3[3];
+    typedef double Mat3x3[9];
+    typedef double Mat6x6[36];
+    typedef double Mat12x12[144];
+    typedef double QuaternionXYZW[4];  // GeoPose order (x, y, z, w)
+    // Canonical manifest reference: a spatialdds:// URI, empty when absent.
+    // Defined here in common so every profile shares one spelling (core's
+    // GeoAnchor and disco's announce types both carry it).
+    typedef string SpatialUri;
+
+    // 2D point/vector; used by polygon zone rings and crossing-line paths
+    // (added 1.8). A struct rather than `typedef double Vec2[2]`, which is
+    // what it was in the 1.8 draft until this type met its first independent
+    // consumer.
+    //
+    // APPENDABLE is deliberate, and is the opposite of what a purity argument
+    // would pick. Under XCDR2 an APPENDABLE struct carries a 4-byte DHEADER
+    // per element; a FINAL one does not, and FINAL would therefore be
+    // byte-identical to the `double[2]` this replaced. The reason to delimit
+    // anyway is reader compatibility, measured against real messages:
+    //
+    //   schema says   wire carries          conformant reader   Foxglove
+    //   FINAL         no per-element DHEADER        OK            FAIL
+    //   APPENDABLE    per-element DHEADER           OK            OK
+    //
+    // A widely deployed omgidl deserializer requires a delimiter on every
+    // nested struct element regardless of its declared extensibility, so a
+    // FINAL element is unreadable there while an APPENDABLE one is readable
+    // everywhere. That makes APPENDABLE strictly dominant rather than a
+    // compromise: it costs four octets per vertex on definitions that are
+    // latched and published once, and it buys every reader. Revisit only if
+    // that deserializer changes upstream.
+    //
+    // DRAFTING RULES, from the episode that produced this type:
+    //   1. An array typedef MUST NOT be used as a sequence element type.
+    //      `sequence<Vec2>` over `typedef double Vec2[2]` is legal IDL that
+    //      `idlc` accepts and that omgidl consumers reject outright ("We do
+    //      not support composing variable length arrays with typedefs").
+    //   2. A struct used as a sequence element SHOULD be APPENDABLE, so its
+    //      elements are delimited on the wire, for the reason above.
+    // The remaining array typedefs are fixed-size members only, never
+    // sequence elements, and are unaffected by either rule.
+    @extensibility(APPENDABLE) struct Vec2 {
+      double x;
+      double y;
+    };
+
+    enum CovarianceType {
+      @value(0) COV_NONE,
+      @value(3) COV_POS3,           // 3x3 position covariance
+      @value(6) COV_POSE6,          // 6x6 pose covariance (pos + rot)
+      @value(9) COV_ROT3,           // 3x3 orientation-only covariance (added in 1.6)
+      @value(12) COV_POSE6_TWIST6   // 12x12 pose + velocity covariance (added in 1.6)
+    };
+
+    // Axis convention for poses expressed in this frame (added in 1.6).
+    // Determines the meaning of the X, Y, Z axes of a PoseSE3 translation
+    // and the body axes of its quaternion. When absent, consumers MUST
+    // assume ENU. See §2.12 Coordinate Axis Convention.
+    enum CoordConvention {
+      @value(0) ENU,       // X-East,  Y-North, Z-Up         (robotics, ROS REP-103, GeoPose)
+      @value(1) CV,        // X-Right, Y-Down,  Z-Forward    (OpenCV, colmap, hloc)
+      @value(2) GRAPHICS,  // X-Right, Y-Up,    Z-Backward   (WebXR, OpenGL, three.js)
+      @value(3) UNITY_LH,  // X-Right, Y-Up,    Z-Forward    (Unity, left-handed)
+      @value(4) NED,       // X-North, Y-East,  Z-Down       (aviation, PX4, MAVLink)
+      @value(5) OTHER      // Custom — consumer MUST consult MetaKV namespace="frame"
+    };
+
+    // Stable, typo-proof frame identity shared across all profiles.
+    // Equality is by uuid; fqn is a normalized, human-readable alias.
+    // Frame scale status (added 1.8). Parallel to CoordConvention: an unstated
+    // frame property that silently corrupts every pose expressed in the frame.
+    // SCALE_DECLARED = producer asserts meters_per_unit directly; SCALE_DERIVED =
+    // meters_per_unit was recovered (e.g. from a legacy similarity transform);
+    // SCALE_UNKNOWN = scale not established, meters_per_unit is not meaningful.
+    enum ScaleStatus {
+      @value(0) SCALE_UNKNOWN,
+      @value(1) SCALE_DECLARED,
+      @value(2) SCALE_DERIVED
+    };
+    // Covariance composition scope (added 1.8 Batch 2). Qualifies an observer
+    // covariance: COV_SCOPE_LOCAL means it is stated against the emitting frame
+    // and consumers MUST compose observer uncertainty through the frame chain;
+    // COV_SCOPE_COMPOSED means the producer has already folded observer
+    // uncertainty in and consumers MUST NOT apply it again. Absent means LOCAL.
+    enum CovScope {
+      @value(0) COV_SCOPE_LOCAL,
+      @value(1) COV_SCOPE_COMPOSED
+    };
+    @extensibility(APPENDABLE) struct FrameRef {
+      string uuid;                 // REQUIRED: stable identifier for the frame
+      string fqn;                  // REQUIRED: normalized FQN, e.g., "oarc/rig01/cam_front"
+      // Coordinate axis convention (added in 1.6). When has_coord_convention
+      // is false, consumers MUST assume ENU per §2.12.
+      boolean has_coord_convention;
+      CoordConvention coord_convention;
+      // Metric scale (added 1.8). When has_scale is false, the frame is metric:
+      // 1 unit = 1 metre (every pre-1.8 publisher is correct by construction). A
+      // producer that has NOT established the frame's scale MUST set has_scale =
+      // true with scale_status = SCALE_UNKNOWN — absence is not the unknown state.
+      // meters_per_unit is the single source of truth, valid when scale_status is
+      // not SCALE_UNKNOWN (1.0 for a native-metric frame). display_unit is
+      // presentation only (e.g. "m","mm","ft") and is never used for computation.
+      boolean has_scale;
+      ScaleStatus scale_status;
+      double meters_per_unit;
+      string display_unit;
+    };
+
+    // Simple typed key/value row for structured extension metadata.
+    // Added in 1.7 draft rev so MetaKV can carry typed extensions inline.
+    @extensibility(APPENDABLE) struct KV {
+      string key;    // SHOULD be namespaced, e.g., "org.key"
+      string value;  // scalar or string-valued extension
+    };
+
+    // Optional namespaced metadata bag for asset descriptors.
+    @extensibility(APPENDABLE) struct MetaKV {
+      string namespace;  // e.g., "sensing.vision.features"
+      string json;       // JSON object string; producer-defined for this namespace
+      // appended in 1.7 draft rev
+      sequence<KV, 64> entries;   // typed extension rows; see typed-first rule (§ Appendix A)
+    };
+
+    // Uniform contract for asset references, covering fetch + integrity.
+    @extensibility(APPENDABLE) struct AssetRef {
+      string uri;          // required: how to fetch
+      string media_type;   // required: IANA or registry-friendly type (with params)
+      string hash;         // required: e.g., "sha256:<hex>"
+      sequence<MetaKV, 16> meta;  // optional: zero or more namespaced bags
+    };
+  };
+};
+
+#endif // SPATIAL_COMMON_TYPES_INCLUDED

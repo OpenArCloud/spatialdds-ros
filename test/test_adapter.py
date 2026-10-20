@@ -219,6 +219,63 @@ class ARefusalReachesWhoeverAsked(_OnABus):
         self.adapter.observed(1.0, 2.0, 0.0)
         self.assertIsNone(self.nav_status(self.mine(self.entities)[-1]))
 
+    def test_a_refusal_persists_until_a_new_goal_is_accepted(self):
+        """
+        **A refusal is state, not an event.** Published once and superseded by
+        the next pose, it can be missed entirely: a client that polls the
+        latched record a moment later sees a robot sitting still with nothing
+        to explain it, which is the silence this path exists to end. So it
+        stays on the record — and this is where that is pinned, because the
+        obvious implementation does not do it.
+        """
+        self.adapter.observed(1.0, 2.0, 0.0)
+        self.adapter.refused("goal (9, 9) abandoned: it enters declared water")
+        self.drain(self.entities, 0.4)
+        # Several more poses, any one of which would have dropped it before.
+        for i in range(LATCH_EVERY_N + 2):
+            self.adapter.observed(1.0 + i * 0.1, 2.0, 0.0)
+        seen = self.mine(self.entities)
+        self.assertTrue(seen, "the cadence should have refreshed the record")
+        self.assertIn("abandoned", self.nav_status(seen[-1]) or "",
+                      "the refusal must still be on the record after further "
+                      "poses — otherwise a client that was not watching at "
+                      "the moment it happened never learns why")
+
+    def test_accepting_a_new_goal_clears_the_old_outcome(self):
+        """
+        Uses `self.adapter` rather than building a second one. A second adapter
+        for the same entity on the same domain is two writers for one key — the
+        collision the library refuses to start into — and the reader would see
+        both, which is how the first version of this test failed.
+        """
+        self.adapter.observed(1.0, 2.0, 0.0)
+        self.adapter.refused("goal (9, 9) abandoned")
+        self.drain(self.entities, 0.4)
+        self.adapter.handle_command(goto(x=2.0, y=2.0))
+        for i in range(LATCH_EVERY_N + 1):
+            self.adapter.observed(1.1 + i * 0.1, 2.0, 0.0)
+        seen = self.mine(self.entities, 0.6)
+        self.assertTrue(seen)
+        self.assertIsNone(self.nav_status(seen[-1]),
+                          "a new goal supersedes what became of the last one")
+
+    def test_a_declined_command_leaves_the_previous_outcome_standing(self):
+        """
+        Cleared on acceptance rather than on arrival. A command that was
+        declined changed nothing, so the requester still needs to see what
+        became of the goal before it.
+        """
+        self.adapter.observed(1.0, 2.0, 0.0)
+        self.adapter.refused("goal (9, 9) abandoned")
+        self.drain(self.entities, 0.4)
+        note = self.adapter.handle_command(goto(has_pose=False))
+        self.assertIn("declined", note)
+        for i in range(LATCH_EVERY_N + 1):
+            self.adapter.observed(1.1 + i * 0.1, 2.0, 0.0)
+        seen = self.mine(self.entities, 0.6)
+        self.assertTrue(seen)
+        self.assertIn("abandoned", self.nav_status(seen[-1]) or "")
+
     def test_a_refusal_before_the_first_pose_publishes_nothing(self):
         """Announcing a robot by complaining about it is not an introduction."""
         self.adapter.refused("blocked before any pose was reported")

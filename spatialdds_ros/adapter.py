@@ -91,14 +91,23 @@ class RobotAdapter:
         self._silent = False
         self._last_seen = 0.0
         self._navigator = navigator
+        # **The last thing that happened to a goal, held until something
+        # changes it.** A refusal published once and then superseded by the
+        # next pose is an *event*, and an event can be missed: a client that
+        # polls the latched record a moment later sees a robot sitting still
+        # with nothing to explain it, which is the exact silence this whole
+        # path exists to end. "What became of the goal I sent" is state, and a
+        # latched record is where state belongs. Cleared when a new goal is
+        # accepted, because that supersedes the old outcome.
+        self._nav_status: Optional[str] = None
 
     # --- what it publishes ------------------------------------------------
 
     def _record(self, pose: PoseSE3, state: LifecycleState,
-                reason: str = "", nav_status: str = "") -> Entity:
+                reason: str = "") -> Entity:
         properties = [KV(key="label", value=self.config.effective_label)]
-        if nav_status:
-            properties.append(KV(key=NAV_STATUS_KEY, value=nav_status))
+        if self._nav_status:
+            properties.append(KV(key=NAV_STATUS_KEY, value=self._nav_status))
         return Entity(
             entity_id=self.config.entity_id,
             # OBSERVED, and not configurable. A self-localizing robot is
@@ -177,14 +186,15 @@ class RobotAdapter:
 
         Off the cadence deliberately: this is a change of state, and the point
         is that the client which asked learns promptly rather than up to four
-        poses later. A no-op before the first pose — there is no record to
-        amend, and announcing a robot by complaining about it is not an
-        introduction.
+        poses later. It then *stays* on the record until a new goal is
+        accepted — see `_nav_status`. A no-op before the first pose: there is
+        no record to amend, and announcing a robot by complaining about it is
+        not an introduction.
         """
         if self._entity is None:
             return
-        self._entity = self._record(
-            self._entity.pose, LifecycleState.ACTIVE, nav_status=why)
+        self._nav_status = why
+        self._entity = self._record(self._entity.pose, LifecycleState.ACTIVE)
         self._entities.write(self._entity)
 
     # --- what it is asked to do -------------------------------------------
@@ -221,6 +231,11 @@ class RobotAdapter:
 
         x, y = command.pose.t[0], command.pose.t[1]
         self._goal = (x, y)
+        # A new goal supersedes whatever became of the last one, so the record
+        # should stop reporting it. Cleared here rather than on arrival, so a
+        # *declined* command leaves the previous outcome standing — the
+        # requester still needs to see it.
+        self._nav_status = None
         if self._navigator is None:
             return (f"accepted goto ({x:.2f}, {y:.2f}) "
                     f"(asked by {command.requester_id})")
