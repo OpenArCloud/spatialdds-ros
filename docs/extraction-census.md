@@ -263,6 +263,33 @@ robot would put it in two places with no error anywhere.
 
 ---
 
+## 10a. One node or three — the census's call
+
+The brief leaves the shape to the census: the three capabilities as separable
+nodes, or one configurable node. **One node**, with the announce switchable,
+and the reason is a coupling in the prototype rather than a preference.
+
+`handle_command` declines a `goto` when `self._entity is None or
+self._silent` — "no pose from this source, so there is nothing to navigate
+from". That decline reads the *entity publisher's* state. Split the publisher
+and the dispatcher into separate nodes and that check has nothing to consult:
+the dispatcher would accept goals for a robot whose pose nobody is publishing,
+which is precisely the acceptance-without-action the prototype spent effort
+closing. Re-establishing it across a process boundary would mean the
+dispatcher subscribing to the entity lane to find out whether its own robot is
+alive — a round trip through the bus to learn something it would have known
+for free.
+
+The same argument does not apply to the announce: it needs the scene, the
+anchor and the lane names, all of which are configuration, and it reads no
+runtime state. It is therefore a capability *within* the node rather than a
+separate one, which costs nothing and keeps one DDS participant per robot
+instead of two.
+
+Against one node: a deployment that wants only discovery, or only command
+dispatch, gets machinery it does not use. That is a real cost and it is small
+— the unused capability opens no endpoints and publishes nothing.
+
 ## 11. What the extraction revealed about the demo
 
 Filed, not fixed — cross-repo fixes are out of scope per the brief. For the
