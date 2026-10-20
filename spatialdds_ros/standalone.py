@@ -156,6 +156,15 @@ def _parser() -> argparse.ArgumentParser:
                    help="a box this source will not leave, so the late-refusal "
                         "path can be exercised without hardware")
     p.add_argument("--announce-kind", default="OTHER")
+    p.add_argument("--content-ref", action="append", default=[],
+                   metavar="catalog:ID",
+                   help="what this robot is, for a consumer that wants to "
+                        "draw it. Repeatable. Omitted, the record carries an "
+                        "empty sequence and a consumer renders a marker")
+    p.add_argument("--external-ref", action="append", default=[],
+                   metavar="KEY=VALUE",
+                   help="what it is also known as, e.g. wikidata=Q4810574. "
+                        "Repeatable")
     return p
 
 
@@ -176,9 +185,20 @@ def _config_from(args) -> tuple:
             raise ConfigError("--bounds needs MINX,MINY,MAXX,MAXY")
         bounds = Bounds(*parts)
     start = tuple(float(v) for v in args.start.split(","))
+    external = []
+    for item in (args.external_ref or []):
+        if "=" not in item:
+            raise ConfigError(
+                f"--external-ref takes KEY=VALUE; got {item!r}. A reference "
+                f"without a namespace cannot be resolved by anyone, which is "
+                f"worse than publishing none")
+        key, _, value = item.partition("=")
+        external.append((key.strip(), value.strip()))
     kwargs = dict(scene=args.scene, entity_id=args.entity_id,
                   frame_id=args.frame_id, anchor=anchor, domain=args.domain,
-                  ground_z=args.ground_z)
+                  ground_z=args.ground_z,
+                  content_refs=tuple(args.content_ref or ()),
+                  external_refs=tuple(external))
     if args.source_id:
         kwargs["source_id"] = args.source_id
     if args.label:

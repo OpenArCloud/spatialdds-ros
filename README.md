@@ -24,10 +24,13 @@ python3 -m spatialdds_ros.standalone \
 
 ```
 robot: scene bare-scene, entity ent:robot:r1 in frame map/bare-scene, DDS domain 0
-robot: no anchor configured, so no FrameTransform is published: this robot's
-       entity and poses are on the bus and complete, and nothing
-       earth-references them — a consumer that wants to place it on a globe
-       cannot, and should say so rather than assume a position
+robot: no anchor configured, so this adapter publishes no FrameTransform: its
+       entity and poses are on the bus and complete, and it makes no claim
+       about where that frame sits on the earth. Another participant may own
+       that claim — a venue publishing its own georeference is the ordinary
+       case, and then this is the correct configuration. If nobody publishes
+       one, a consumer cannot place this robot on a globe and should say so
+       rather than assume a position
 robot: announce: svc:robot:r1 as OTHER, 3 topics, ttl 300s
 ```
 
@@ -75,7 +78,59 @@ because every possible default would be a false statement about the world:
 | `frame_id` | which frame its pose is in. A pose without its frame is meaningless |
 
 Everything else has one: `domain` 0, `ground_z` 0.0, `pose_source` tf,
-`nav2_action` navigate_to_pose, `source_id` derived from `entity_id`.
+`nav2_action` navigate_to_pose, `source_id` derived from `entity_id`,
+`content_refs` and `external_refs` empty.
+
+### What the robot *is*, and what it is *also known as*
+
+```sh
+python3 -m spatialdds_ros.standalone \
+    --scene bare-scene --entity-id ent:robot:r1 --frame-id map/bare-scene \
+    --content-ref catalog:dcef7c31-1d5f-54aa-9344-899912f9d34a \
+    --external-ref wikidata=Q4810574
+```
+
+`content_refs` is how a consumer finds out what to *draw*. A client that reads
+a `catalog:` reference can resolve the model behind it; without one it has
+nothing to resolve and will render a marker. That is not a bug in the client —
+it is the honest rendering of a robot that has not said what it looks like.
+
+`external_refs` is what it is also known as: a wikidata id, an
+asset-management number, a fleet number.
+
+**Both are empty unless configured, and empty is a statement.** The adapter
+publishes what the operator told it and nothing else — it invents no reference
+and guesses no asset, because a reference nobody authorised is a claim on
+nobody's authority. An empty sequence says "this robot names no content"; it
+is not an accident of omission, and `test/test_adapter.py` asserts both
+directions.
+
+On a ROS robot the same two are string-array parameters, with `external_refs`
+as `key=value` entries:
+
+```sh
+ros2 run spatialdds_ros robot_node --ros-args \
+    -p scene:=bare-scene -p entity_id:=ent:robot:r1 \
+    -p frame_id:=map/bare-scene \
+    -p content_refs:='[catalog:dcef7c31-1d5f-54aa-9344-899912f9d34a]' \
+    -p external_refs:='[wikidata=Q4810574]'
+```
+
+### Property keys
+
+The adapter publishes two entity properties, and these names are **the
+convention** rather than this library's private spelling — a consumer should
+be able to read any `spatialdds_ros` robot without diffing two records to
+discover what they are called:
+
+| key | meaning |
+|---|---|
+| `label` | the human-facing name, from `label` or the `entity_id`'s tail |
+| `nav.status` | what became of the last goal, held until a new one is accepted |
+
+Unprefixed on purpose. An earlier consumer had published `demo.label` and
+`demo.nav_status`, which scoped a general fact to one deployment; a second
+consumer reading that record would have had to know whose demo it was.
 
 ### The anchor, and what its absence means for a consumer
 
@@ -87,13 +142,25 @@ to start, because a partial anchor is not a weaker claim about where the frame
 is, it is an unusable one.
 
 **What a reader of the scene sees in that mode.** The robot's entity and its
-poses are present, complete and moving. Nothing earth-references them: there
-is no `FrameTransform` for its frame, so a client that wants to place the
-robot on a globe *cannot*, and should say so rather than assume a position.
-That is the whole of the degradation, and it is deliberate — the alternative,
-defaulting the anchor to the frame origin, would have every unconfigured robot
-claiming to be in the Gulf of Guinea with a pose that looks entirely
-plausible. A default is not neutral when the thing being defaulted is a claim.
+poses are present, complete and moving, and *this adapter* makes no claim
+about where that frame sits on the earth.
+
+Whether anybody else does is not something it can see. **A venue publishing
+its own georeference is the ordinary case**, and then anchorless is the
+correct configuration — the scene keeps the single claim and the robot does
+not contradict it. That is how SpatialDDS-demo runs. If nobody publishes one,
+a client that wants to place the robot on a globe cannot, and should say so
+rather than assume a position.
+
+The note said "nothing earth-references them" until 2026-10-19, which assumed
+this adapter was the only thing that could. In the first real deployment it
+was not, and anchorless was correct *because* somebody else owned the claim —
+the opposite of the absence the wording described.
+
+The degradation is deliberate either way. The alternative, defaulting the
+anchor to the frame origin, would have every unconfigured robot claiming to be
+in the Gulf of Guinea with a pose that looks entirely plausible. A default is
+not neutral when the thing being defaulted is a claim.
 
 ## What it claims, and what it will not
 

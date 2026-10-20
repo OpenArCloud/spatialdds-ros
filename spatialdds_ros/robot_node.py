@@ -43,6 +43,12 @@ def _declare(node) -> Config:
     node.declare_parameter("pose_source", "tf")
     node.declare_parameter("nav2_action", "navigate_to_pose")
     node.declare_parameter("type_uri", "")
+    # String arrays, because that is what a launch file can express. Declared
+    # with empty defaults: an adapter states only what the operator
+    # configured, so "not set" has to be distinguishable from "set to
+    # nothing" — and both mean the same published empty sequence.
+    node.declare_parameter("content_refs", [""])
+    node.declare_parameter("external_refs", [""])
     node.declare_parameter("base_frame", "base_link")
     node.declare_parameter("map_frame", "map")
     node.declare_parameter("odom_topic", "/odom")
@@ -88,6 +94,25 @@ def _declare(node) -> Config:
         kwargs["label"] = text("label")
     if text("type_uri"):
         kwargs["type_uri"] = text("type_uri")
+
+    def strings(name: str) -> list:
+        raw = node.get_parameter(name).value or []
+        return [str(v).strip() for v in raw if str(v).strip()]
+
+    refs = strings("content_refs")
+    if refs:
+        kwargs["content_refs"] = refs
+    external = []
+    for item in strings("external_refs"):
+        if "=" not in item:
+            raise ConfigError(
+                f"external_refs entries are key=value; got {item!r}. A "
+                f"reference without a namespace cannot be resolved by "
+                f"anyone, which is worse than publishing none")
+        key, _, value = item.partition("=")
+        external.append((key.strip(), value.strip()))
+    if external:
+        kwargs["external_refs"] = external
     return Config(**kwargs)
 
 

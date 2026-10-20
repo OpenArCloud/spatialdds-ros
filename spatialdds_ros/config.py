@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Sequence, Tuple
 
 #: "mobile robot" — an automatic machine capable of movement in any given
 #: environment, `subclass of` (P279) Q11012 (robot). Carried from the
@@ -50,6 +50,13 @@ DEFAULT_NAV2_ACTION = "navigate_to_pose"
 #: it as a georeferenced OBSERVED pose emits a slowly-drifting claim about
 #: where a robot sits on the earth with every number looking plausible.
 POSE_SOURCES = ("tf", "amcl", "odom")
+
+#: The IDL's bounds on the two reference sequences
+#: (`sequence[str, 8]` and `sequence[KV, 8]` on `spatial.owm.Entity`).
+#: Named here so a refusal can cite the limit rather than just report a
+#: serialize failure.
+MAX_CONTENT_REFS = 8
+MAX_EXTERNAL_REFS = 8
 
 #: One path segment of a SpatialDDS topic name (§3.3.1). Deliberately strict:
 #: a scene name carrying a slash would silently produce a six-segment topic,
@@ -118,7 +125,37 @@ class Config:
     type_uri: str = DEFAULT_TYPE_URI
     label: Optional[str] = None
 
+    #: What this robot *is*, for a consumer that wants to draw it.
+    #:
+    #: Added 2026-10-19 because their absence blocked the first real adoption.
+    #: SpatialDDS-demo's robot carries `catalog:dcef7c31-…`, and a consumer
+    #: reading that reference is what makes it render a robot rather than a
+    #: pin: no reference, no asset, no model. An adapter that cannot say what
+    #: a robot looks like cannot be a consumer's only publisher of that robot,
+    #: and there was no way for a consumer to supply it from outside — the
+    #: record simply had nowhere to put it.
+    #:
+    #: **Empty by default, and empty means empty.** The adapter states what the
+    #: operator configured and nothing else; it invents no reference and
+    #: guesses no asset. An empty sequence is a published fact — "this robot
+    #: names no content" — not an accident of omission, and the gates assert
+    #: both directions.
+    content_refs: Tuple[str, ...] = ()
+
+    #: What this robot is *also known as*: wikidata, an asset-management id, a
+    #: fleet number. Same rule — only what was configured.
+    external_refs: Tuple[Tuple[str, str], ...] = ()
+
     def __post_init__(self) -> None:
+        # A launch file or a dict will hand these over as lists. The dataclass
+        # is frozen, so they are normalised to tuples here rather than stored
+        # mutable — a shared mutable default on a frozen "value" is a bug
+        # waiting for a second robot.
+        object.__setattr__(self, "content_refs",
+                           tuple(self.content_refs or ()))
+        object.__setattr__(self, "external_refs",
+                           tuple(tuple(pair) for pair in
+                                 (self.external_refs or ())))
         problems: list[str] = []
 
         # The three with no honest default. Reported together, and each with
@@ -155,6 +192,28 @@ class Config:
         if self.domain < 0 or self.domain > 232:
             problems.append(
                 f"domain {self.domain} is outside the DDS range [0, 232]")
+
+        # Bounded sequences in the IDL: `content_refs` and `external_refs` are
+        # both `sequence[..., 8]`. Checked here rather than left to serialize,
+        # which fails late and says nothing about which field or why.
+        if len(self.content_refs) > MAX_CONTENT_REFS:
+            problems.append(
+                f"content_refs has {len(self.content_refs)} entries; the IDL "
+                f"bounds it at {MAX_CONTENT_REFS}")
+        for ref in self.content_refs:
+            if not ref or not str(ref).strip():
+                problems.append(
+                    "a content_ref is empty; an empty reference resolves to "
+                    "nothing and is not the same as publishing none")
+        if len(self.external_refs) > MAX_EXTERNAL_REFS:
+            problems.append(
+                f"external_refs has {len(self.external_refs)} entries; the IDL "
+                f"bounds it at {MAX_EXTERNAL_REFS}")
+        for pair in self.external_refs:
+            if len(tuple(pair)) != 2 or not all(str(v).strip() for v in pair):
+                problems.append(
+                    f"external_refs entries are (key, value) pairs and both "
+                    f"halves must be non-empty; got {pair!r}")
 
         if problems:
             raise ConfigError(
@@ -201,12 +260,24 @@ class Config:
             f"{self.frame_id}, DDS domain {self.domain}",
         ]
         if self.anchor is None:
+            # **Reworded 2026-10-19.** This used to say "nothing
+            # earth-references them", which assumed this adapter is the only
+            # thing that could — and in the first real deployment it was not:
+            # the venue publishes the scene's own FrameTransform, and running
+            # the robot anchorless is correct *because* somebody else owns
+            # that claim, which is the opposite of the absence the old wording
+            # described. So the note now says what it actually knows: this
+            # adapter is not publishing one. Whether anyone else is, it cannot
+            # see from here.
             notes.append(
-                "no anchor configured, so no FrameTransform is published: this "
-                "robot's entity and poses are on the bus and complete, and "
-                "nothing earth-references them — a consumer that wants to "
-                "place it on a globe cannot, and should say so rather than "
-                "assume a position")
+                "no anchor configured, so this adapter publishes no "
+                "FrameTransform: its entity and poses are on the bus and "
+                "complete, and it makes no claim about where that frame sits "
+                "on the earth. Another participant may own that claim — a "
+                "venue publishing its own georeference is the ordinary case, "
+                "and then this is the correct configuration. If nobody "
+                "publishes one, a consumer cannot place this robot on a globe "
+                "and should say so rather than assume a position")
         else:
             notes.append(
                 f"anchor {self.anchor.lat_deg:.8f}, {self.anchor.lon_deg:.8f}, "

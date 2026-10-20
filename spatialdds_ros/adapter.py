@@ -126,8 +126,14 @@ class RobotAdapter:
             has_extent=False,
             extent=Aabb3(min_xyz=[0.0, 0.0, 0.0], max_xyz=[0.0, 0.0, 0.0]),
             properties=properties,
-            external_refs=[],
-            content_refs=[],
+            # Only what the operator configured. An adapter that invented a
+            # reference would be asserting something about the world on
+            # nobody's authority; an adapter with nowhere to put one cannot be
+            # a consumer's only publisher of its robot, which is what blocked
+            # the first adoption. Empty is a published fact, not an omission.
+            external_refs=[KV(key=k, value=v)
+                           for k, v in self.config.external_refs],
+            content_refs=list(self.config.content_refs),
             state=state,
             state_reason=reason,
             source_id=self.config.effective_source_id,

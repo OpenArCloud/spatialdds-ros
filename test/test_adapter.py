@@ -154,6 +154,102 @@ class WhatItPublishes(_OnABus):
         self.assertAlmostEqual(self.mine(self.entities)[-1].pose.t[2], -0.84)
 
 
+class WhatTheRobotIsAndIsAlsoKnownAs(_OnABus):
+    """
+    `content_refs` and `external_refs`, both directions.
+
+    **Why these exist at all.** Their absence blocked this library's first
+    adoption: SpatialDDS-demo's robot carries `catalog:dcef7c31-…`, and a
+    consumer reading that reference is the difference between rendering a robot
+    and rendering a pin. The adapter had nowhere to put one, so no consumer
+    could supply it from outside — and the symptom was not an error but a demo
+    that ran and looked wrong.
+
+    Both directions are asserted because the ruled requirement is two-sided:
+    what is configured appears on the wire, and what is *not* configured
+    publishes an **empty sequence** — a published "this robot names no
+    content" rather than an accident of omission.
+    """
+
+    DOMAIN = 97
+
+    def test_configured_refs_appear_on_the_wire(self):
+        adapter = RobotAdapter(self.participant, config(
+            content_refs=["catalog:dcef7c31-1d5f-54aa-9344-899912f9d34a"],
+            external_refs=[("wikidata", "Q4810574")]))
+        adapter.observed(1.0, 2.0, 0.0)
+        seen = self.mine(self.entities)
+        self.assertTrue(seen)
+        robot = seen[-1]
+        self.assertEqual(
+            list(robot.content_refs),
+            ["catalog:dcef7c31-1d5f-54aa-9344-899912f9d34a"],
+            "a consumer reads this to find out what the robot looks like")
+        self.assertEqual([(kv.key, kv.value) for kv in robot.external_refs],
+                         [("wikidata", "Q4810574")])
+
+    def test_unconfigured_refs_publish_empty_not_absent(self):
+        """
+        Empty, and present. `Entity` is a struct so the members are always on
+        the wire; what matters is that they are *empty* rather than carrying
+        something the adapter invented. An adapter that guessed an asset would
+        be asserting on nobody's authority.
+        """
+        adapter = RobotAdapter(self.participant, config())
+        adapter.observed(1.0, 2.0, 0.0)
+        robot = self.mine(self.entities)[-1]
+        self.assertEqual(list(robot.content_refs), [])
+        self.assertEqual(list(robot.external_refs), [])
+
+    def test_several_refs_all_travel(self):
+        """Sequences, not a single slot — a robot may name a model and a
+        datasheet."""
+        refs = [f"catalog:{i:08d}-0000-0000-0000-000000000000"
+                for i in range(4)]
+        adapter = RobotAdapter(self.participant, config(content_refs=refs))
+        adapter.observed(1.0, 2.0, 0.0)
+        self.assertEqual(list(self.mine(self.entities)[-1].content_refs), refs)
+
+    def test_they_survive_the_wire(self):
+        """Serialised and back, since a bounded sequence of nested structs is
+        where an encoding mistake would show."""
+        adapter = RobotAdapter(self.participant, config(
+            content_refs=["catalog:abc"],
+            external_refs=[("wikidata", "Q1"), ("fleet", "7")]))
+        adapter.observed(1.0, 2.0, 0.0)
+        robot = self.mine(self.entities)[-1]
+        back = Entity.deserialize(robot.serialize())
+        self.assertEqual(list(back.content_refs), ["catalog:abc"])
+        self.assertEqual([(kv.key, kv.value) for kv in back.external_refs],
+                         [("wikidata", "Q1"), ("fleet", "7")])
+
+    def test_refs_survive_a_refusal(self):
+        """
+        The refusal rebuilds the record. A rebuild that dropped the references
+        would make a refused robot stop being renderable, which is the kind of
+        coupling nobody would look for.
+        """
+        adapter = RobotAdapter(self.participant,
+                               config(content_refs=["catalog:abc"]))
+        adapter.observed(1.0, 2.0, 0.0)
+        self.drain(self.entities, 0.4)
+        adapter.refused("goal abandoned")
+        robot = self.mine(self.entities)[-1]
+        self.assertEqual(list(robot.content_refs), ["catalog:abc"])
+        self.assertIn("abandoned", self.nav_status(robot) or "")
+
+    def test_refs_survive_going_quiet(self):
+        """Same argument for the UNOBSERVED rebuild."""
+        adapter = RobotAdapter(self.participant,
+                               config(content_refs=["catalog:abc"]))
+        adapter.observed(1.0, 2.0, 0.0)
+        self.drain(self.entities, 0.4)
+        adapter.tick(now=time.time() + 60.0)
+        robot = self.mine(self.entities)[-1]
+        self.assertEqual(robot.state.name, "UNOBSERVED")
+        self.assertEqual(list(robot.content_refs), ["catalog:abc"])
+
+
 class GoingQuiet(_OnABus):
     DOMAIN = 91
 

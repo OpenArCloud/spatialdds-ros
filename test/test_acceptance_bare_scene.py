@@ -219,9 +219,15 @@ class ABareScene(unittest.TestCase):
         self.assertEqual([t.child_ref.fqn for t in got], [])
         self.assertFalse(self.config.publishes_georeference)
         notes = " ".join(self.start_notes)
-        self.assertIn("no FrameTransform is published", notes)
+        self.assertIn("publishes no FrameTransform", notes)
+        # And the note must not over-claim on another participant's behalf.
+        # It said "nothing earth-references them" until 2026-10-19, which was
+        # false in the first real deployment — a venue owned that claim, and
+        # anchorless was correct *because* it did.
+        self.assertNotIn("nothing earth-references", notes)
+        self.assertIn("Another participant may own that claim", notes)
         print("  no anchor: nothing on the frames lane, and the mode was "
-              "stated at startup")
+              "stated at startup without claiming what others publish")
 
     def test_6_the_whole_run_reported_itself(self):
         """

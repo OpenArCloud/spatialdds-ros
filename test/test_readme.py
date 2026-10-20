@@ -82,8 +82,18 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         except Exception as exc:                              # noqa: BLE001
             raise unittest.SkipTest(f"DDS-UNAVAILABLE: {exc}")
 
-        body = next(b for _l, b in fences()
-                    if "python3 -m spatialdds_ros.standalone" in b)
+        bodies = [b for _l, b in fences()
+                  if "python3 -m spatialdds_ros.standalone" in b]
+        self.assertTrue(bodies)
+        # **Every** such fence, not the first. The README grew a second
+        # standalone example and `next(...)` would have run only the original
+        # while the new one counted as "accounted for" — aim-by-position,
+        # which is the failure this whole file exists to prevent.
+        for index, body in enumerate(bodies):
+            with self.subTest(fence=index):
+                self._run_standalone_fence(body, domain=150 + index)
+
+    def _run_standalone_fence(self, body: str, domain: int) -> None:
         # The README's command, lifted verbatim rather than retyped, with the
         # pip line dropped and a domain added so it cannot meet another test's
         # robot.
@@ -92,7 +102,7 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
             for line in body.strip().splitlines()
             if "pip install" not in line)
         self.assertIn("--scene bare-scene", command)
-        argv = command.split() + ["--domain", "150"]
+        argv = command.split() + ["--domain", str(domain)]
 
         # `python3` in the README means "this interpreter" here, so the name
         # is replaced rather than relied on being the right one on PATH.
@@ -141,7 +151,9 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         notes = " ".join(config.startup_notes())
         self.assertIn("scene bare-scene, entity ent:robot:r1 in frame "
                       "map/bare-scene, DDS domain 0", notes)
-        for phrase in ("no anchor configured", "earth-references",
+        for phrase in ("no anchor configured",
+                       "publishes no FrameTransform",
+                       "Another participant may own that claim",
                        "should say so rather than assume"):
             self.assertIn(phrase, notes,
                           f"the README quotes {phrase!r} but the code does not "
@@ -181,18 +193,25 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         against what the node declares. A renamed parameter would otherwise
         only be found by someone following the README on a robot.
         """
-        body = next(b for _l, b in fences() if "ros2 run spatialdds_ros" in b)
+        bodies = [b for _l, b in fences() if "ros2 run spatialdds_ros" in b]
+        self.assertTrue(bodies)
         declared = self._declared_parameters()
-        used = re.findall(r"-p (\w+):=", body)
-        self.assertTrue(used, "the fence should set parameters")
-        for name in used:
-            self.assertIn(name, declared,
-                          f"the README sets -p {name}:= but the node never "
-                          f"declares it")
-        # And the three the README calls mandatory really are.
-        for name in ("scene", "entity_id", "frame_id"):
-            self.assertIn(name, used)
-        print(f"  ros2 fence sets {len(used)} parameters, all declared")
+        total = 0
+        for index, body in enumerate(bodies):
+            used = re.findall(r"-p (\w+):=", body)
+            with self.subTest(fence=index):
+                self.assertTrue(used, "the fence should set parameters")
+                for name in used:
+                    self.assertIn(name, declared,
+                                  f"the README sets -p {name}:= but the node "
+                                  f"never declares it")
+                # Every ros2 example must carry the three mandatory ones, or
+                # it is an example that would refuse to start.
+                for name in ("scene", "entity_id", "frame_id"):
+                    self.assertIn(name, used)
+            total += len(used)
+        print(f"  {len(bodies)} ros2 fence(s) set {total} parameters, "
+              f"all declared")
 
     def test_the_pose_source_values_in_the_prose_are_the_real_ones(self):
         from spatialdds_ros.config import POSE_SOURCES

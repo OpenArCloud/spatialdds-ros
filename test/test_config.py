@@ -17,7 +17,8 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from spatialdds_ros.config import (                           # noqa: E402
-    DEFAULT_NAV2_ACTION, DEFAULT_TYPE_URI, Anchor, Config, ConfigError)
+    DEFAULT_NAV2_ACTION, DEFAULT_TYPE_URI, MAX_CONTENT_REFS,
+    MAX_EXTERNAL_REFS, Anchor, Config, ConfigError)
 from spatialdds_ros.topics import Topics                      # noqa: E402
 
 GOOD = dict(scene="bare-scene", entity_id="ent:robot:r1",
@@ -90,6 +91,65 @@ class WhatRefusesToStart(unittest.TestCase):
             Config(**{**GOOD, "pose_source": "wishful"})
 
 
+class TheReferenceFieldsAreValidated(unittest.TestCase):
+    """
+    Bounded sequences, checked where they enter rather than at serialize time.
+
+    `content_refs` and `external_refs` are both `sequence[..., 8]` in the IDL.
+    Exceeding a bound fails inside CycloneDDS with a message that names
+    neither the field nor the limit, so the refusal belongs here.
+    """
+
+    def test_empty_by_default(self):
+        config = Config(**GOOD)
+        self.assertEqual(config.content_refs, ())
+        self.assertEqual(config.external_refs, ())
+
+    def test_lists_are_normalised_to_tuples(self):
+        """
+        A launch file hands over lists; the dataclass is frozen. A mutable
+        value on a frozen "value" is a bug waiting for a second robot.
+        """
+        config = Config(**GOOD, content_refs=["catalog:a", "catalog:b"],
+                        external_refs=[["wikidata", "Q1"]])
+        self.assertIsInstance(config.content_refs, tuple)
+        self.assertIsInstance(config.external_refs, tuple)
+        self.assertIsInstance(config.external_refs[0], tuple)
+        self.assertEqual(config.content_refs, ("catalog:a", "catalog:b"))
+
+    def test_too_many_content_refs_refuses_and_cites_the_bound(self):
+        with self.assertRaises(ConfigError) as caught:
+            Config(**GOOD, content_refs=[f"catalog:{i}" for i in range(9)])
+        self.assertIn(str(MAX_CONTENT_REFS), str(caught.exception))
+        self.assertIn("IDL", str(caught.exception))
+
+    def test_exactly_the_bound_is_accepted(self):
+        """The boundary, not just past it — an off-by-one here would refuse a
+        legitimate configuration."""
+        config = Config(**GOOD,
+                        content_refs=[f"catalog:{i}" for i in
+                                      range(MAX_CONTENT_REFS)])
+        self.assertEqual(len(config.content_refs), MAX_CONTENT_REFS)
+
+    def test_too_many_external_refs_refuses(self):
+        with self.assertRaises(ConfigError) as caught:
+            Config(**GOOD,
+                   external_refs=[("k", str(i)) for i in range(9)])
+        self.assertIn(str(MAX_EXTERNAL_REFS), str(caught.exception))
+
+    def test_an_empty_content_ref_refuses(self):
+        """An empty reference resolves to nothing, which is different from
+        publishing none."""
+        with self.assertRaises(ConfigError) as caught:
+            Config(**GOOD, content_refs=["catalog:a", "  "])
+        self.assertIn("resolves to nothing", str(caught.exception))
+
+    def test_a_malformed_external_ref_refuses(self):
+        for bad in ([("only-one",)], [("k", "")], [("", "v")]):
+            with self.subTest(bad=bad), self.assertRaises(ConfigError):
+                Config(**GOOD, external_refs=bad)
+
+
 class WhatASilenceMeans(unittest.TestCase):
     def test_no_anchor_means_no_georeference_and_says_so(self):
         """
@@ -100,17 +160,22 @@ class WhatASilenceMeans(unittest.TestCase):
         config = Config(**GOOD)
         self.assertFalse(config.publishes_georeference)
         notes = " ".join(config.startup_notes())
-        self.assertIn("no FrameTransform is published", notes)
+        self.assertIn("publishes no FrameTransform", notes)
         self.assertIn("consumer", notes,
                       "the degraded mode is documented from the consumer's "
                       "side, per the ruling")
+        # And it must not claim to know what *other* participants publish.
+        # The first wording said "nothing earth-references them", which was
+        # false in the first real deployment — a venue owned that claim.
+        self.assertNotIn("nothing earth-references", notes)
+        self.assertIn("Another participant may own that claim", notes)
 
     def test_an_anchor_means_a_georeference(self):
         config = Config(**GOOD, anchor=Anchor(30.28396857, -97.73974829, 145.083))
         self.assertTrue(config.publishes_georeference)
         notes = " ".join(config.startup_notes())
         self.assertIn("earth-fixed", notes)
-        self.assertNotIn("no FrameTransform", notes)
+        self.assertNotIn("publishes no FrameTransform", notes)
 
     def test_odom_is_selectable_but_never_silent(self):
         """
