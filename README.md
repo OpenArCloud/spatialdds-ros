@@ -10,6 +10,37 @@ relayed. ROS and SpatialDDS meet on the wire because both are DDS, so this is
 one process holding both stacks, publishing the model as model and reading ROS
 as ROS.
 
+## Installing, and what you are not installing
+
+```sh
+pip install spatialdds-ros
+```
+
+That gets `cyclonedds` and nothing else. **No ROS.** The library puts a robot
+on a SpatialDDS bus, reads commands off it and drives a navigator, and none of
+that needs a ROS install — so `rclpy` is not a dependency, and the absence is
+deliberate rather than an omission waiting to be tidied up.
+
+The split runs through the whole package:
+
+| dependency | declared in | what it is for |
+|---|---|---|
+| `cyclonedds` | `install_requires` | the bus. Everything here needs it |
+| `rclpy`, `tf2_ros`, `nav2_msgs` | `package.xml` | the ROS node alone, resolved by `rosdep`, never by pip |
+
+Only `spatialdds_ros.robot_node` requires a ROS 2 environment. It imports
+`rclpy` inside its entry point rather than at module scope, which is what
+lets the other twelve modules — and the entire test suite — run on a machine
+that has never had ROS installed.
+
+**That claim is a gate, not a promise.**
+[`test/test_no_ros_needed.py`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/test/test_no_ros_needed.py)
+walks every module reachable from `import spatialdds_ros` and fails on a
+module-scope `import rclpy` anywhere in it. By source inspection, so it
+catches the violation on a ROS workstation where the import would have
+succeeded — a test that only checked "the import worked" would pass there and
+fail in CI. If the split ever stops being real, that is where it is reported.
+
 ## A robot on the bus, with no robot
 
 No ROS, no nav2, no hardware:
@@ -71,7 +102,7 @@ pip.
 Three parameters have no default and the node refuses to start without them,
 because every possible default would be a false statement about the world:
 
-| | why there is no default |
+| parameter | why there is no default |
 |---|---|
 | `scene` | which world this robot is in. A wrong scene is an empty bus, not an error |
 | `entity_id` | which robot it is. A default collides the moment a second one runs |
@@ -224,7 +255,7 @@ yields `InvalidSample` notifications for a dispose or a departed writer, and a
 read that assumes otherwise raises on the first peer that joins a lane and
 leaves. Until 0.2.1 this library made that assumption in one place, which
 reached two call sites, and the first real deployment found it within a
-minute. `docs/failability.md` §3 has the tracebacks.
+minute. [`docs/failability.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/failability.md) §3 has the tracebacks.
 
 This adapter still does not *act* on disposal: it owns one key, never disposes
 it, and reports going quiet as `UNOBSERVED` — a weaker statement than "this
@@ -241,13 +272,14 @@ Everything runs with no ROS installed — that is a gate
 `import rclpy` would take the whole suite offline. The DDS-backed tests need
 `cyclonedds` and skip with a reason without it.
 
-| | |
+| document | what is in it |
 |---|---|
-| `docs/extraction-census.md` | what became a parameter, what the library fills, and why |
-| `docs/failability.md` | the two claims broken deliberately, with the failures |
-| `docs/spec-queue.md` | two things for the specification rather than worked around |
-| `spatialdds_idl18/PROVENANCE.md` | where the vendored 1.8 bindings came from |
+| [`docs/extraction-census.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/extraction-census.md) | what became a parameter, what the library fills, and why |
+| [`docs/failability.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/failability.md) | the two claims broken deliberately, with the failures |
+| [`docs/spec-queue.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/spec-queue.md) | two things for the specification rather than worked around |
+| [`spatialdds_idl18/PROVENANCE.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/spatialdds_idl18/PROVENANCE.md) | where the vendored 1.8 bindings came from |
+| [`docs/RELEASING.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/RELEASING.md) | how a version reaches PyPI, and how the artifact is checked against the commit |
 
 ## Licence
 
-MIT. See `LICENSE`.
+MIT. See [`LICENSE`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/LICENSE).

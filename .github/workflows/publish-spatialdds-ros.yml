@@ -1,0 +1,79 @@
+# Publish spatialdds-ros to PyPI by trusted publishing.
+#
+# Inert as committed. It runs only on a tag matching spatialdds-ros-v*, and
+# even then it only succeeds once PyPI has a trusted publisher configured for
+# this repository, this workflow filename and this environment. Nothing here
+# holds a token: trusted publishing exchanges GitHub's OIDC identity for a
+# short-lived upload credential, so there is no API token to leak or rotate.
+#
+# To release, see docs/RELEASING.md. The gates are not re-run here; a release
+# is cut from a commit whose gates already passed, and a workflow that
+# re-verified its own artifact would be a check observing its own machinery.
+name: publish spatialdds-ros
+
+on:
+  push:
+    tags:
+      - "spatialdds-ros-v*"
+  # Manual runs build the distributions and stop before publishing, which is
+  # how you check the artifact without spending a version number.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build the wheel and the sdist
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+      # The version in the tag and the version in the package have to be the
+      # same thing, or the tag points at something that was never released.
+      # All three declarations are checked, not just the one the tag strips:
+      # test/test_packaging.py asserts they agree, and this is the second
+      # reading of the same fact at the moment it becomes irreversible.
+      - name: The tag names the version every declaration carries
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#spatialdds-ros-v}"
+          pkg="$(python -c 'import re, pathlib; print(re.search(r"__version__ = .([^\"]+).", pathlib.Path("spatialdds_ros/__init__.py").read_text()).group(1))')"
+          setup="$(python -c 'import re, pathlib; print(re.search(r"version=.([0-9][^\"]*).", pathlib.Path("setup.py").read_text()).group(1))')"
+          xml="$(python -c 'import re, pathlib; print(re.search(r"<version>([^<]+)</version>", pathlib.Path("package.xml").read_text()).group(1))')"
+          echo "tag=$tag package=$pkg setup=$setup package.xml=$xml"
+          test "$tag" = "$pkg"   || { echo "tag $tag != __init__ $pkg"; exit 1; }
+          test "$tag" = "$setup" || { echo "tag $tag != setup.py $setup"; exit 1; }
+          test "$tag" = "$xml"   || { echo "tag $tag != package.xml $xml"; exit 1; }
+          # setuptools normalises the distribution name in the filename:
+          # spatialdds-ros is published, spatialdds_ros-<v>-py3-none-any.whl
+          # is written. Asserting the published spelling here would fail on
+          # every release for a reason that has nothing to do with the release.
+          test -f "dist/spatialdds_ros-$pkg-py3-none-any.whl"
+          test -f "dist/spatialdds_ros-$pkg.tar.gz"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spatialdds-ros-dist
+          path: dist/
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    # The environment is the second gate: PyPI's trusted publisher is bound to
+    # it by name, and a repository setting can require a human to approve.
+    environment: pypi
+    permissions:
+      id-token: write          # the OIDC token trusted publishing exchanges
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: spatialdds-ros-dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password:`. The absence is the mechanism.

@@ -51,6 +51,9 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
     #: Fences verified structurally, with the test that does it.
     STRUCTURAL = {
         "pip install -e .": "the install line is the ament/pip path",
+        "pip install spatialdds-ros":
+            "test_packaging.py::test_the_readme_install_line_names_the_"
+            "distribution — checked against the name the wheel publishes",
         "ros2 run spatialdds_ros robot_node": "test_the_ros2_fence_names_real_parameters",
         "robot: scene bare-scene": "test_the_printed_output_is_what_it_prints",
     }
