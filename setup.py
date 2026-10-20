@@ -4,7 +4,7 @@ PACKAGE = "spatialdds_ros"
 
 setup(
     name=PACKAGE,
-    version="0.2.0",
+    version="0.2.1",
     # `spatialdds_idl18` ships alongside: the generated bindings annotate
     # nested members with their own fully-qualified names, so the package has
     # to be importable as `spatialdds_idl18` and cannot be nested inside this

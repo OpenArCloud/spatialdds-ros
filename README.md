@@ -189,6 +189,47 @@ failure mode is silence: a mismatched QoS means endpoints that never meet with
 nothing reporting it, and a hand-written topic name means a robot publishing
 where nobody is listening.
 
+### Sharing a participant with another SpatialDDS library
+
+The §3.3.3 profiles go on the **endpoints**. The `Topic` objects this library
+creates carry default QoS, and that is deliberate rather than an omission.
+
+A topic name is unique within a participant, and its QoS has to agree among
+every live `Topic` object for that name — in either direction, with the
+refusal (`DDS_RETCODE_INCONSISTENT_POLICY`) landing on whichever call came
+second. Putting the profile on the topic therefore made topic QoS a contract
+every *other* participant in the process had to match, and nothing in this
+API said so. Version 0.2.0 did that, and SpatialDDS-demo was refused an entity
+reader on a lane this adapter had already opened — both conventions legal DDS,
+neither legal beside the other.
+
+So this library now asks for the least it can: the default, which is what any
+participant that passes no QoS gets, including every ROS and DDS example.
+Nothing leaves the wire — matching is a reader/writer negotiation over
+endpoint QoS, and a topic's QoS enters it only as a default for endpoints that
+ask for one, which these never do.
+
+If you run another SpatialDDS stack in the same process and it creates its
+topics with an explicit QoS, it is the one imposing the contract, and the two
+cannot share that name. `test/test_transport.py::TwoConventionsOnOneTopic`
+pins all of it, including a library writer exchanging real samples with a
+reader built the other convention's way.
+
+### Reads see the lifecycle
+
+`transport.take_samples` returns payloads; `transport.take_with_state` returns
+them alongside instance state for a caller that wants the lifecycle. Both
+matter because CycloneDDS's `take()` does not return payloads only — it also
+yields `InvalidSample` notifications for a dispose or a departed writer, and a
+read that assumes otherwise raises on the first peer that joins a lane and
+leaves. Until 0.2.1 this library made that assumption in one place, which
+reached two call sites, and the first real deployment found it within a
+minute. `docs/failability.md` §3 has the tracebacks.
+
+This adapter still does not *act* on disposal: it owns one key, never disposes
+it, and reports going quiet as `UNOBSERVED` — a weaker statement than "this
+robot is gone". Not acting on an event is not the same as not receiving one.
+
 ## Tests
 
 ```sh
