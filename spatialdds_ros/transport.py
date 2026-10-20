@@ -32,22 +32,44 @@ def _profile(name: str) -> QosProfile:
             f"{', '.join(sorted(PROFILES))}") from None
 
 
+def _topic(participant: DomainParticipant, topic_name: str, datatype: Type,
+           profile: QosProfile) -> Topic:
+    """
+    The topic, with QoS derived from the profile **and nothing else**.
+
+    Lifespan is deliberately excluded here even though DDS lists it as a topic
+    policy. A topic's QoS has to be the same whoever creates the object, and
+    this library creates one per endpoint: a reader built without a lifespan
+    and a writer built with one would disagree about the same topic name, and
+    DDS rejects the second with `DDS_RETCODE_INCONSISTENT_POLICY` — on whichever
+    endpoint happened to be constructed second, which makes it look like a
+    problem with that endpoint rather than with the pair.
+
+    Found exactly that way: an announce reader opened first, then the announce
+    writer with its `ttl_sec` mapped onto Lifespan, and the writer failed. So
+    the topic is a function of the profile alone and Lifespan rides on the
+    writer, which is where a payload TTL belongs anyway — it is the publisher's
+    statement about how long its own sample is worth keeping.
+    """
+    return Topic(participant, topic_name, datatype, qos=profile.to_qos())
+
+
 def make_writer(participant: DomainParticipant, topic_name: str,
                 datatype: Type, qos_profile: str, *,
                 lifespan_sec: Optional[float] = None) -> DataWriter:
     profile = _profile(qos_profile)
-    qos = profile.to_qos(lifespan_sec=lifespan_sec)
-    topic = Topic(participant, topic_name, datatype, qos=qos)
-    return DataWriter(Publisher(participant, qos=qos), topic, qos=qos)
+    topic = _topic(participant, topic_name, datatype, profile)
+    writer_qos = profile.to_qos(lifespan_sec=lifespan_sec)
+    return DataWriter(Publisher(participant, qos=profile.to_qos()), topic,
+                      qos=writer_qos)
 
 
 def make_reader(participant: DomainParticipant, topic_name: str,
-                datatype: Type, qos_profile: str, *,
-                lifespan_sec: Optional[float] = None) -> DataReader:
+                datatype: Type, qos_profile: str) -> DataReader:
     profile = _profile(qos_profile)
-    qos = profile.to_qos(lifespan_sec=lifespan_sec)
-    topic = Topic(participant, topic_name, datatype, qos=qos)
-    return DataReader(Subscriber(participant, qos=qos), topic, qos=qos)
+    topic = _topic(participant, topic_name, datatype, profile)
+    return DataReader(Subscriber(participant, qos=profile.to_qos()), topic,
+                      qos=profile.to_qos())
 
 
 def take_samples(reader: DataReader, *, n: int = 100) -> List[Any]:
