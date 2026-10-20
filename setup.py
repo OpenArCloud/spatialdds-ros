@@ -28,6 +28,7 @@ setup(
     entry_points={
         "console_scripts": [
             f"robot_node = {PACKAGE}.robot_node:main",
+            f"kinematic_node = {PACKAGE}.standalone:main",
         ],
     },
 )
