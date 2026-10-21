@@ -32,6 +32,12 @@ jobs:
           python-version: "3.11"
       - name: Build the wheel and the sdist
         run: |
+          # certifi before anything else is fetched. GHSA-6q48-6c7w-9gw2
+          # (Critical): certifi before 2026.10.18 still trusts the removed
+          # emSign root, and pip verifies TLS against certifi's bundle -- so
+          # the runner's preinstalled copy is what every later fetch uses
+          # unless it is replaced first. The runner image is not ours to pin.
+          python -m pip install --upgrade pip certifi
           python -m pip install --upgrade build
           python -m build
       # The version in the tag and the version in the package have to be the
