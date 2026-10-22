@@ -86,3 +86,72 @@ whose argument order could be read either way.
 **What the spec might do.** Name the members — a small struct instead of an
 array — or, far cheaper, state the order once on the typedef and have each use
 site refer to it rather than restate it.
+
+---
+
+## 3. A FAST entity has no freshness contract
+
+**Raised 2026-10-21, the awareness census (`awareness-census.md` §3).**
+
+A consumer planning around another robot has to decide when that robot stops
+being where it was last seen. Nothing on the wire says. `Entity` has no ttl;
+the spec's one staleness rule, "Consumers SHOULD discard Announce samples
+where `now - stamp > 2 * ttl_sec`" (1.8-full:1326 at `9c3e1f2`), is about
+Announce; and `TopicMeta.target_rate_hz = 0` means *unspecified*. So a
+publisher that speaks only when its entity moves and one that has died look
+the same until something else says otherwise.
+
+**What the library does meanwhile.** Learns each peer's cadence from its own
+poses (`Tempo`, the derivation the adapter uses for its own silence) and
+stops projecting a peer once that cadence is broken. The record is kept, per
+§2.14.
+
+**What the spec might do.** Let a FAST entity's publisher state its cadence —
+a non-zero `target_rate_hz` given meaning, or a heartbeat promise on the pose
+lane — so that silence beyond it is evidence rather than a guess.
+
+---
+
+## 4. `Entity` and `ModelPose` carry no pose uncertainty
+
+**Raised 2026-10-21, the awareness census §2.**
+
+Both carry a bare `PoseSE3` (`owm.idl:71-109`). An OBSERVED pose is a
+sighting, and every sighting has error; without a covariance the wire implies
+a precision no publisher claimed, and a consumer has nothing to inflate an
+obstacle by. `core` already has `CovMatrix`, and `FrameTransform` uses it.
+
+**What the library does meanwhile.** Draws a point peer as a disc of a
+configured radius, documented as plumbing and not as a measurement.
+
+---
+
+## 5. The registered entity topic is not the one in use
+
+**Raised 2026-10-21, the awareness census §7.**
+
+1.8-full:1484 registers `model_entity` as
+`spatialdds/<scene>/model/entity/v0`. This library and SpatialDDS-demo both
+publish and read `spatialdds/<scene>/world/entity/v1` (`topics.py`). A
+publisher following the registration and a consumer following either
+implementation would never meet, and the only symptom is an empty bus.
+
+**What the library does meanwhile.** Nothing different. Which side moves —
+the registration or the implementations — is a ruling, and moving one
+library's topic alone would split the bus it is meant to join.
+
+---
+
+## 6. §2.14 says what may not be purged, not what may stop being acted on
+
+**Raised 2026-10-21, the awareness census §3.**
+
+"Consumers MUST NOT treat a liveliness change as a deliberate removal, and
+MUST NOT purge a durable keyed instance on liveliness loss alone"
+(1.8-full:473). This is about the record, and it is right. Read literally by
+a planner, it says to keep avoiding a robot that died ten minutes ago. A
+consumer that keeps the record but stops *projecting* a peer with no current
+evidence breaks neither sentence, but the text does not say so.
+
+**What the spec might do.** A non-normative line distinguishing the record
+from what a consumer derives from it.
