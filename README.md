@@ -2,8 +2,11 @@
 
 Make a ROS 2 robot a SpatialDDS participant: its pose published as a
 `spatial.owm` entity on scene-scoped topics, `goto` commands consumed from
-`ModelCommand` and dispatched to nav2, and its presence announced — all on the
-same DDS bus ROS already runs on.
+`ModelCommand` and dispatched to nav2, its presence announced, and — when
+asked — the scene's other moving entities put into its own costmap. All on the
+same DDS bus ROS already runs on: one pip install makes a robot seen,
+steerable and aware, including of robots in other ROS domains it shares no
+middleware with.
 
 **A type adapter on a shared bus, not a protocol gateway.** Nothing is
 relayed. ROS and SpatialDDS meet on the wire because both are DDS, so this is
@@ -30,7 +33,7 @@ The split runs through the whole package:
 
 Only `spatialdds_ros.robot_node` requires a ROS 2 environment. It imports
 `rclpy` inside its entry point rather than at module scope, which is what
-lets the other twelve modules — and the entire test suite — run on a machine
+lets the other thirteen modules — and the entire test suite — run on a machine
 that has never had ROS installed.
 
 **That claim is a gate, not a promise.**
@@ -97,6 +100,117 @@ static and identity, which is a simulator and not a localizing robot.
 deferred** — there is no released binary package; install from source or with
 pip.
 
+## A robot that sees the scene
+
+```sh
+ros2 run spatialdds_ros robot_node --ros-args \
+    -p scene:=bare-scene \
+    -p entity_id:=ent:robot:b \
+    -p frame_id:=map/bare-scene \
+    -p awareness:=true \
+    -p awareness_range_m:=8.0
+```
+
+The node then reads the scene's other moving entities off the bus and
+publishes them where nav2 can plan around them: `~/peers/cloud` marks them,
+`~/peers/clearing` is a ring at `awareness_range_m` that clears whatever has
+gone, and `~/peers/markers` shows an operator what is being avoided. nav2
+needs one obstacle layer reading both clouds:
+
+```yaml
+peers_layer:
+  plugin: "nav2_costmap_2d::ObstacleLayer"
+  enabled: true
+  observation_sources: peers clearing
+  peers:
+    topic: /robot_b/peers/cloud
+    data_type: PointCloud2
+    marking: true
+    clearing: false
+    obstacle_max_range: 8.0
+    raytrace_max_range: 8.5
+    min_obstacle_height: 0.0
+    max_obstacle_height: 2.0
+  clearing:
+    topic: /robot_b/peers/clearing
+    data_type: PointCloud2
+    marking: false
+    clearing: true
+    obstacle_max_range: 8.0
+    raytrace_max_range: 8.5
+    min_obstacle_height: 0.0
+    max_obstacle_height: 2.0
+```
+
+Add `peers_layer` to the costmap's `plugins`, before the inflation layer, in
+every costmap that should avoid peers — the global one, for the planner to
+route around them. The topics carry the node's name (`robot_b` here).
+
+**Set `awareness_range_m` to your costmap's obstacle range or less** — both
+`obstacle_max_range` and `raytrace_max_range` above. The node refuses to start
+with awareness on and no range, because the right value lives in your nav2
+YAML, which it cannot read, and a guess beyond your raytrace range draws marks
+nothing will ever clear.
+
+**Why two clouds.** A marking cloud that empties raytraces nothing, so the
+last place a peer was seen stays lethal for good. Measured, with the ring
+beside it and without, in
+[`docs/awareness-census.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/awareness-census.md)
+§1.
+
+### What is drawn, and when it stops
+
+- **Moving things only:** `FAST`, `ACTIVE`, with a pose, within range, and of
+  an `awareness_types` URI if you set any. A declared region is not a peer;
+  the keep-out filter is the mechanism for those.
+- **Never this robot.** Its own record does reach its own reader, so this is
+  a filter that does work, on its own `entity_id`.
+- **Its own size, or `peer_radius_m`** (0.3 m) for a peer that publishes no
+  extent — which includes every robot this library publishes.
+- **Dropped when it goes quiet, and remembered.** A peer is drawn while its
+  poses keep arriving, within a window learned from its own cadence — at
+  least one second, three times its interval, measured on this robot's clock.
+  The record is kept, so the next pose brings it back with no rediscovery. An
+  `UNOBSERVED`, retired or disposed record, or a writer that has gone, drops
+  it at once.
+- **Never at a guessed position.** A peer in another frame is placed through
+  both frames' georeferences; with either one missing it is skipped, and the
+  log says which.
+
+### Two robots, two ROS domains, one bus
+
+The walkthrough is the acceptance test. Robot A runs in `ROS_DOMAIN_ID` 10,
+localized by an AMCL that converges at (3, 0) and then says nothing; robot B
+runs in 20 at the origin with nav2's planner; the SpatialDDS bus is DDS domain
+30. Nothing else connects them.
+
+```sh
+docker build -t spatialdds-ros-nav2 -f test/ros/Dockerfile .
+python3 -m pytest test/test_acceptance_two_domains.py -q -s
+```
+
+```
+  A absent: path 6.00 m, max |y| 0.000; cloud empty
+  A present: cloud 109 points near (3, 0), cost 100; path 6.30 m, max |y| 0.84
+  A still for 20 s: drawn in all 31 samples
+  quiet but latched: not drawing ent:robot:a: UNOBSERVED: no pose from svc:robot:a for 1.6s
+  killed: cost at A back to 0 within 2.8s (probe overhead included)
+  gateway served and validated 2 entities: ['ent:robot:a', 'ent:robot:b']
+```
+
+B's plan to (6, 0) bends around A, and straightens again once A is gone. Both
+ROS graphs are listed from one container, and neither holds a node or topic of
+the other: what separates them is the domain id, not the network.
+
+**What it does not do.** A peer beyond the range is not drawn. A mark left
+behind when this robot drives away from it stays until the robot comes back
+within range, which is how nav2 treats anything a sensor saw. A peer whose
+publisher sends a pose only when it moves will drop out when it stops — every
+`spatialdds_ros` robot sends at least `pose_floor_hz` for exactly this reason,
+but the wire gives a consumer no way to know what a foreign one promises
+([`docs/spec-queue.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/spec-queue.md)
+§3).
+
 ## Configuration
 
 Three parameters have no default and the node refuses to start without them,
@@ -110,7 +224,9 @@ because every possible default would be a false statement about the world:
 
 Everything else has one: `domain` 0, `ground_z` 0.0, `pose_source` tf,
 `nav2_action` navigate_to_pose, `source_id` derived from `entity_id`,
-`content_refs` and `external_refs` empty.
+`content_refs` and `external_refs` empty, `pose_floor_hz` 2.0, `awareness`
+off, `peer_radius_m` 0.3, `awareness_types` empty. One more has none, and is
+needed only with awareness on: `awareness_range_m`, for the reason above.
 
 ### What the robot *is*, and what it is *also known as*
 
@@ -198,8 +314,20 @@ not neutral when the thing being defaulted is a claim.
 The adapter publishes `basis = OBSERVED` and offers no parameter to change it:
 a self-localizing robot is reporting where it has worked out that it is, which
 is a sighting rather than an assertion. It claims no extent — a robot locates
-itself, it does not legislate a region, and an extent would be read as
-keep-out by anything applying the `DECLARED` rule.
+itself, and its footprint is not a region anybody should plan by. (Until 0.4.0
+this said an extent would be read as keep-out by the `DECLARED` rule; the
+robot is `OBSERVED`, so that rule excludes it before it looks at extent. The
+conclusion stands; the reason was wrong. Publishing a true footprint is a
+follow-up.)
+
+**Its pose goes out at least `pose_floor_hz` (2 Hz), moving or not.** A
+consumer stops drawing a peer it has not heard from within that peer's
+cadence, and some localizers fall silent when the robot stops — AMCL updates
+on motion — so without a floor a stationary robot would vanish from its
+peers' costmaps while standing in their way. In `pose_source=amcl` a live
+AMCL publisher counts as holding the estimate; a robot whose localizer has
+actually gone still goes `UNOBSERVED` on time. Anything at or below 1 Hz is
+refused, as slower than a consumer's shortest window.
 
 Three things it refuses to do quietly:
 
@@ -261,6 +389,13 @@ This adapter still does not *act* on disposal: it owns one key, never disposes
 it, and reports going quiet as `UNOBSERVED` — a weaker statement than "this
 robot is gone". Not acting on an event is not the same as not receiving one.
 
+**And nothing it writes is disposed for it.** CycloneDDS's default writer QoS
+disposes a writer's instances when the writer goes, so until 0.4.0 a robot
+that crashed reached every reader as `NOT_ALIVE_DISPOSED` — a deliberate
+removal, by §2.14's reading — ten seconds after the crash. Every writer here
+now turns that off, and the same events arrive as `NOT_ALIVE_NO_WRITERS`:
+liveliness lost, which is what happened.
+
 ## Tests
 
 ```sh
@@ -275,8 +410,9 @@ Everything runs with no ROS installed — that is a gate
 | document | what is in it |
 |---|---|
 | [`docs/extraction-census.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/extraction-census.md) | what became a parameter, what the library fills, and why |
+| [`docs/awareness-census.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/awareness-census.md) | what becomes an obstacle, when it stops, in which frame — measured, and ruled |
 | [`docs/failability.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/failability.md) | the two claims broken deliberately, with the failures |
-| [`docs/spec-queue.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/spec-queue.md) | two things for the specification rather than worked around |
+| [`docs/spec-queue.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/spec-queue.md) | things for the specification rather than worked around |
 | [`spatialdds_idl18/PROVENANCE.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/spatialdds_idl18/PROVENANCE.md) | where the vendored 1.8 bindings came from |
 | [`docs/RELEASING.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/RELEASING.md) | how a version reaches PyPI, and how the artifact is checked against the commit |
 

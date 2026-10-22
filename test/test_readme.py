@@ -56,6 +56,10 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
             "distribution — checked against the name the wheel publishes",
         "ros2 run spatialdds_ros robot_node": "test_the_ros2_fence_names_real_parameters",
         "robot: scene bare-scene": "test_the_printed_output_is_what_it_prints",
+        "peers_layer:": "test_the_nav2_stanza_is_the_one_the_acceptance_ran",
+        "test_acceptance_two_domains.py":
+            "test_the_two_domain_fence_names_the_real_test_and_image",
+        "A absent: path": "test_the_two_domain_output_is_what_the_test_prints",
     }
 
     def test_there_are_fences_to_check(self):
@@ -189,6 +193,10 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         self.assertIn("`ground_z` 0.0", text)
         self.assertIn("`pose_source` tf", text)
         self.assertIn(DEFAULT_NAV2_ACTION, text)
+        self.assertIn(f"`pose_floor_hz` {config.pose_floor_hz}", text)
+        self.assertIn(f"`peer_radius_m` {config.peer_radius_m}", text)
+        self.assertFalse(config.awareness)
+        self.assertIsNone(config.awareness_range_m)
 
     def test_the_ros2_fence_names_real_parameters(self):
         """
@@ -216,6 +224,52 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         print(f"  {len(bodies)} ros2 fence(s) set {total} parameters, "
               f"all declared")
 
+    def test_the_nav2_stanza_is_the_one_the_acceptance_ran(self):
+        """
+        The obstacle-layer stanza is the README's one piece of somebody
+        else's configuration, so it is checked against the file the
+        two-domain acceptance actually ran nav2 with: the same lines, in
+        order. And the awareness fence's range sits inside both of its
+        ranges, which is the rule the node cannot check for itself.
+        """
+        body = next(b for _l, b in fences() if "peers_layer:" in b)
+        ran = (REPO / "test" / "ros" / "nav2_b.yaml").read_text()
+        lines = [l for l in body.splitlines() if l.strip()]
+        indent = "      "
+        block = "\n".join(indent + l for l in lines)
+        self.assertIn(block, ran,
+                      "the README's stanza is not the one the acceptance ran")
+        ranges = [float(v) for v in
+                  re.findall(r"(?:obstacle|raytrace)_max_range: ([\d.]+)", body)]
+        fence = next(b for _l, b in fences()
+                     if "awareness:=true" in b and "ros2 run" in b)
+        reach = float(re.search(r"awareness_range_m:=([\d.]+)", fence).group(1))
+        self.assertTrue(ranges)
+        self.assertLessEqual(reach, min(ranges))
+
+    def test_the_two_domain_fence_names_the_real_test_and_image(self):
+        body = next(b for _l, b in fences()
+                    if "test_acceptance_two_domains.py" in b)
+        test = REPO / "test" / "test_acceptance_two_domains.py"
+        self.assertTrue(test.exists())
+        build = next(l.strip() for l in body.splitlines()
+                     if l.strip().startswith("docker build"))
+        self.assertIn(build, (REPO / "test" / "ros" / "Dockerfile").read_text())
+        self.assertIn(build, test.read_text(),
+                      "the test's own skip reason should name the same build")
+
+    def test_the_two_domain_output_is_what_the_test_prints(self):
+        """Each line's label — its words up to the first number or colon —
+        is in a print of the acceptance test: the README quotes a program
+        that exists. (What follows a colon can be B's own log, quoted.)"""
+        body = next(b for _l, b in fences() if "A absent: path" in b)
+        source = (REPO / "test" / "test_acceptance_two_domains.py").read_text()
+        for line in body.strip().splitlines():
+            stem = re.split(r"[\d(\[:]", line.strip(), maxsplit=1)[0].strip()
+            with self.subTest(line=stem):
+                self.assertGreaterEqual(len(stem), 6)
+                self.assertIn(stem, source)
+
     def test_the_pose_source_values_in_the_prose_are_the_real_ones(self):
         from spatialdds_ros.config import POSE_SOURCES
         text = README.read_text()
@@ -234,7 +288,8 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
                     Config(**{**good, missing: ""})
 
     def test_the_named_docs_exist(self):
-        for name in ("docs/extraction-census.md", "docs/failability.md",
+        for name in ("docs/extraction-census.md", "docs/awareness-census.md",
+                     "docs/failability.md",
                      "docs/spec-queue.md",
                      "spatialdds_idl18/PROVENANCE.md"):
             with self.subTest(doc=name):
