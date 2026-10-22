@@ -22,7 +22,7 @@ import sys
 from typing import Optional
 
 from spatialdds_ros.config import (
-    DEFAULT_POSE_FLOOR_HZ, Anchor, Config, ConfigError)
+    DEFAULT_PEER_RADIUS_M, DEFAULT_POSE_FLOOR_HZ, Anchor, Config, ConfigError)
 
 
 def _declare(node) -> Config:
@@ -56,6 +56,12 @@ def _declare(node) -> Config:
     node.declare_parameter("amcl_topic", "/amcl_pose")
     node.declare_parameter("rate_hz", 10.0)
     node.declare_parameter("pose_floor_hz", DEFAULT_POSE_FLOOR_HZ)
+    # Awareness. Off unless asked for; the range has a NaN sentinel because
+    # "not set" must refuse to start when awareness is on (`Config`).
+    node.declare_parameter("awareness", False)
+    node.declare_parameter("awareness_range_m", float("nan"))
+    node.declare_parameter("peer_radius_m", DEFAULT_PEER_RADIUS_M)
+    node.declare_parameter("awareness_types", [""])
     # Three separate parameters rather than one array, so a launch file that
     # sets two of them fails on the third instead of silently shipping a
     # two-element anchor.
@@ -90,7 +96,12 @@ def _declare(node) -> Config:
         pose_source=text("pose_source") or "tf",
         nav2_action=text("nav2_action") or "navigate_to_pose",
         pose_floor_hz=number("pose_floor_hz"),
+        awareness=bool(node.get_parameter("awareness").value),
+        peer_radius_m=number("peer_radius_m"),
     )
+    reach = number("awareness_range_m")
+    if not math.isnan(reach):
+        kwargs["awareness_range_m"] = reach
     if text("source_id"):
         kwargs["source_id"] = text("source_id")
     if text("label"):
@@ -102,6 +113,9 @@ def _declare(node) -> Config:
         raw = node.get_parameter(name).value or []
         return [str(v).strip() for v in raw if str(v).strip()]
 
+    types = strings("awareness_types")
+    if types:
+        kwargs["awareness_types"] = types
     refs = strings("content_refs")
     if refs:
         kwargs["content_refs"] = refs
@@ -153,6 +167,8 @@ def main(argv=None) -> int:                                   # pragma: no cover
                 self.get_logger().info(note)
 
             self._subscribe_to_the_pose()
+            self._awareness = (_AwarenessOutput(self)
+                               if self.config.awareness else None)
             period = 1.0 / float(self.get_parameter("rate_hz").value)
             self.create_timer(period, self._tick)
             self.get_logger().info(
@@ -243,6 +259,114 @@ def main(argv=None) -> int:                                   # pragma: no cover
             note = self.adapter.tick()
             if note:
                 self.get_logger().info(note)
+            if self._awareness is not None:
+                self._awareness.tick()
+
+    class _AwarenessOutput:
+        """
+        The awareness picture as nav2 reads it: two clouds and the markers.
+
+        `~/peers/cloud` marks the peers; `~/peers/clearing` is a clearing-only
+        ring at `awareness_range_m` that clears whatever has gone — measured
+        for the census, a marking cloud that empties clears nothing on its
+        own. Both are stamped in the base frame, because the obstacle layer
+        raytraces from the cloud's frame origin. The README carries the
+        obstacle-layer stanza they need.
+        """
+
+        def __init__(self, node) -> None:
+            from rclpy.qos import qos_profile_sensor_data
+            from sensor_msgs.msg import PointCloud2, PointField
+            from visualization_msgs.msg import MarkerArray
+
+            from spatialdds_ros.awareness import Awareness, clearing_ring
+
+            self._node = node
+            self._awareness = Awareness(node.participant, node.config)
+            self._PointCloud2, self._PointField = PointCloud2, PointField
+            self._cloud = node.create_publisher(
+                PointCloud2, "~/peers/cloud", qos_profile_sensor_data)
+            self._clearing = node.create_publisher(
+                PointCloud2, "~/peers/clearing", qos_profile_sensor_data)
+            self._markers = node.create_publisher(
+                MarkerArray, "~/peers/markers", 10)
+            self._ring = clearing_ring(node.config.awareness_range_m)
+            self._reported: dict = {}
+            self._counts: dict = {}
+
+        def _cloud_msg(self, points, stamp, frame):
+            from spatialdds_ros.awareness import pack_xyz
+            msg = self._PointCloud2()
+            msg.header.stamp, msg.header.frame_id = stamp, frame
+            msg.height, msg.width = 1, len(points)
+            msg.fields = [self._PointField(
+                name=n, offset=4 * i, datatype=self._PointField.FLOAT32,
+                count=1) for i, n in enumerate("xyz")]
+            msg.is_bigendian, msg.point_step = False, 12
+            msg.row_step, msg.is_dense = 12 * len(points), True
+            msg.data = pack_xyz(points)
+            return msg
+
+        def tick(self) -> None:
+            from spatialdds_ros.awareness import to_base
+            self._awareness.poll()
+            robot = self._node.adapter.pose
+            picture = self._awareness.picture(
+                None if robot is None else robot[:2])
+            self._report(picture)
+            if robot is None:
+                return              # no pose, no base frame to draw in
+            stamp = self._node.get_clock().now().to_msg()
+            base = str(self._node.get_parameter("base_frame").value)
+            points = [p for o in picture.obstacles for p in o.points]
+            self._cloud.publish(self._cloud_msg(
+                to_base(points, *robot), stamp, base))
+            self._clearing.publish(self._cloud_msg(self._ring, stamp, base))
+            self._publish_markers(picture, stamp)
+
+        def _report(self, picture) -> None:
+            """Each skip reason once, when it changes; counts when they do."""
+            log = self._node.get_logger()
+            for entity_id, why in picture.skipped.items():
+                if self._reported.get(entity_id) != why:
+                    log.info(f"awareness: not drawing {entity_id}: {why}")
+                    self._reported[entity_id] = why
+            for entity_id in [k for k in self._reported
+                              if k not in picture.skipped]:
+                del self._reported[entity_id]
+            counts = dict(picture.counts)
+            if counts != self._counts:
+                log.info("awareness: " + ", ".join(
+                    f"{k} {v}" for k, v in sorted(counts.items())))
+                self._counts = counts
+
+        def _publish_markers(self, picture, stamp) -> None:
+            from visualization_msgs.msg import Marker, MarkerArray
+            frame = str(self._node.get_parameter("map_frame").value)
+            out = MarkerArray()
+            clear = Marker()
+            clear.action = Marker.DELETEALL
+            out.markers.append(clear)
+            for index, obstacle in enumerate(picture.obstacles):
+                for kind, offset in ((Marker.CYLINDER, 0), (Marker.TEXT_VIEW_FACING, 1)):
+                    m = Marker()
+                    m.header.stamp, m.header.frame_id = stamp, frame
+                    m.ns, m.id, m.type = "peers", 2 * index + offset, kind
+                    m.pose.position.x, m.pose.position.y = obstacle.x, obstacle.y
+                    m.pose.orientation.w = 1.0
+                    if kind == Marker.CYLINDER:
+                        radius = max(math.dist(p, (obstacle.x, obstacle.y))
+                                     for p in obstacle.points) or 0.05
+                        m.scale.x = m.scale.y = 2 * radius
+                        m.scale.z = 0.2
+                        m.color.r, m.color.g, m.color.a = 1.0, 0.5, 0.6
+                    else:
+                        m.pose.position.z = 0.6
+                        m.scale.z = 0.3
+                        m.text = obstacle.label
+                        m.color.r = m.color.g = m.color.b = m.color.a = 1.0
+                    out.markers.append(m)
+            self._markers.publish(out)
 
     class _Nav2Navigator:
         """nav2, asked properly and reported honestly."""

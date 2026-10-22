@@ -30,6 +30,7 @@ statement:
 """
 from __future__ import annotations
 
+import math
 import time
 from typing import List, Optional, Protocol, Tuple
 
@@ -329,6 +330,16 @@ class RobotAdapter:
 
     def clear_goal(self) -> None:
         self._goal = None
+
+    @property
+    def pose(self) -> Optional[Tuple[float, float, float]]:
+        """The last published (x, y, yaw) in this robot's frame, or `None`."""
+        if self._entity is None:
+            return None
+        q = self._entity.pose.q
+        yaw = math.atan2(2.0 * (q[3] * q[2] + q[0] * q[1]),
+                         1.0 - 2.0 * (q[1] * q[1] + q[2] * q[2]))
+        return self._entity.pose.t[0], self._entity.pose.t[1], yaw
 
     @property
     def state(self) -> str:

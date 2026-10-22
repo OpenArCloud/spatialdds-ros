@@ -436,6 +436,14 @@ class TheCloudsGeometry(unittest.TestCase):
         gap = max(math.dist(ring[i], ring[i - 1]) for i in range(len(ring)))
         self.assertLessEqual(gap, RING_STEP_M + 1e-9)
 
+    def test_the_cloud_bytes_are_twelve_per_point_little_endian(self):
+        import struct
+        from spatialdds_ros.awareness import POINT_Z_M, pack_xyz
+        data = pack_xyz([(1.5, -2.0), (0.25, 4.0)])
+        self.assertEqual(len(data), 24)
+        self.assertEqual(data, struct.pack(
+            "<6f", 1.5, -2.0, POINT_Z_M, 0.25, 4.0, POINT_Z_M))
+
     def test_base_frame_points_follow_the_robots_heading(self):
         """A peer due east of a robot facing north is on its right."""
         from spatialdds_ros.awareness import to_base

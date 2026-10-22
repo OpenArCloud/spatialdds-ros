@@ -35,6 +35,7 @@ Three rules, each because the alternative is a false statement:
 from __future__ import annotations
 
 import math
+import struct
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -404,3 +405,17 @@ def clearing_ring(radius: float) -> List[Tuple[float, float]]:
     n = max(8, int(math.ceil(2 * math.pi * radius / RING_STEP_M)))
     return [(radius * math.cos(2 * math.pi * k / n),
              radius * math.sin(2 * math.pi * k / n)) for k in range(n)]
+
+
+#: Height the cloud's points sit at in the base frame: inside the obstacle
+#: layer's default `min_obstacle_height` (0.0) to `max_obstacle_height` (2.0).
+POINT_Z_M = 0.1
+
+
+def pack_xyz(points, z: float = POINT_Z_M) -> bytes:
+    """
+    `PointCloud2` data for (x, y) points: little-endian float32 x, y, z, 12
+    bytes a point. Packed here rather than through `sensor_msgs_py` so the
+    bytes are testable with no ROS installed.
+    """
+    return b"".join(struct.pack("<fff", x, y, z) for x, y in points)
