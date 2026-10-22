@@ -21,7 +21,8 @@ import math
 import sys
 from typing import Optional
 
-from spatialdds_ros.config import Anchor, Config, ConfigError
+from spatialdds_ros.config import (
+    DEFAULT_POSE_FLOOR_HZ, Anchor, Config, ConfigError)
 
 
 def _declare(node) -> Config:
@@ -54,6 +55,7 @@ def _declare(node) -> Config:
     node.declare_parameter("odom_topic", "/odom")
     node.declare_parameter("amcl_topic", "/amcl_pose")
     node.declare_parameter("rate_hz", 10.0)
+    node.declare_parameter("pose_floor_hz", DEFAULT_POSE_FLOOR_HZ)
     # Three separate parameters rather than one array, so a launch file that
     # sets two of them fails on the third instead of silently shipping a
     # two-element anchor.
@@ -87,6 +89,7 @@ def _declare(node) -> Config:
         ground_z=number("ground_z"),
         pose_source=text("pose_source") or "tf",
         nav2_action=text("nav2_action") or "navigate_to_pose",
+        pose_floor_hz=number("pose_floor_hz"),
     )
     if text("source_id"):
         kwargs["source_id"] = text("source_id")
@@ -182,11 +185,11 @@ def main(argv=None) -> int:                                   # pragma: no cover
                 self._read_pose = self._pose_from_tf
             elif source == "amcl":
                 from geometry_msgs.msg import PoseWithCovarianceStamped
+                self._amcl_topic = str(self.get_parameter("amcl_topic").value)
                 self.create_subscription(
-                    PoseWithCovarianceStamped,
-                    str(self.get_parameter("amcl_topic").value),
+                    PoseWithCovarianceStamped, self._amcl_topic,
                     self._on_amcl, 10)
-                self._read_pose = lambda: None
+                self._read_pose = self._amcl_holding
             else:                                   # odom, warned about above
                 from nav_msgs.msg import Odometry
                 self.create_subscription(
@@ -213,6 +216,18 @@ def main(argv=None) -> int:                                   # pragma: no cover
             p = msg.pose.pose
             self.adapter.observed(p.position.x, p.position.y,
                                   _yaw_of(p.orientation))
+
+        def _amcl_holding(self) -> None:
+            """
+            AMCL publishes on filter updates, and those need motion, so a
+            stopped robot hears nothing — which is not the same as a localizer
+            that has gone. While something still publishes on the AMCL topic
+            its last estimate stands, and the adapter is told so; the floor
+            then keeps the robot fresh on the bus. When AMCL goes away, so does
+            this, and the robot goes UNOBSERVED on its own threshold.
+            """
+            if self.count_publishers(self._amcl_topic) > 0:
+                self.adapter.holding()
 
         def _on_odom(self, msg) -> None:
             p = msg.pose.pose

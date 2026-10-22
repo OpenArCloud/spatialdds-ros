@@ -289,6 +289,74 @@ class GoingQuiet(_OnABus):
         self.assertEqual(seen[-1].state.name, "ACTIVE")
 
 
+
+class TheFloor(_OnABus):
+    """
+    The pose goes out at a minimum rate whether or not it changed.
+
+    Ruled 2026-10-21: a consumer stops drawing a peer it has not heard from
+    within that peer's cadence, so a robot whose pose source goes quiet when it
+    stops — AMCL — would vanish from its peers' costmaps while standing in
+    their way. The publish side closes that for every `spatialdds_ros` robot.
+    """
+    DOMAIN = 98
+
+    def test_a_stationary_robot_is_republished(self):
+        start = time.time()
+        self.adapter.observed(4.0, 5.0, 0.0, now=start)
+        self.drain(self.poses, 0.3)
+        floor = 1.0 / self.config.pose_floor_hz
+        self.adapter.tick(now=start + floor + 0.01)
+        poses = self.mine(self.poses, 0.3)
+        self.assertEqual(len(poses), 1, "one republish per floor interval")
+        self.assertAlmostEqual(poses[0].pose.t[0], 4.0)
+        self.assertAlmostEqual(poses[0].pose.t[1], 5.0)
+
+    def test_not_before_the_floor_is_due(self):
+        start = time.time()
+        self.adapter.observed(4.0, 5.0, 0.0, now=start)
+        self.drain(self.poses, 0.3)
+        self.adapter.tick(now=start + 0.5 / self.config.pose_floor_hz)
+        self.assertEqual(self.mine(self.poses, 0.3), [])
+
+    def test_a_holding_localizer_keeps_the_robot_active_and_fresh(self):
+        """The AMCL case: no new pose for far longer than the silence
+        threshold, but the localizer is up. ACTIVE, and on the bus at the
+        floor rate throughout."""
+        start = time.time()
+        self.adapter.observed(4.0, 5.0, 0.0, now=start)
+        self.drain(self.poses, 0.3)
+        step = 1.0 / self.config.pose_floor_hz
+        sent = 0
+        for k in range(1, 21):                       # ten seconds of stillness
+            self.adapter.holding(now=start + k * step)
+            self.adapter.tick(now=start + k * step + 0.001)
+            # Counted as they go: the pose lane is KEEP_LAST(1) per key, so a
+            # reader drained afterwards holds only the newest.
+            sent += len(self.mine(self.poses, 0.05))
+        self.assertEqual(self.adapter.state, "ACTIVE")
+        self.assertGreaterEqual(sent, 19)
+
+    def test_a_silent_robot_gets_no_floor(self):
+        """Republishing is not a sighting: a source that stopped is still
+        declared UNOBSERVED on time, and nothing is sent after."""
+        start = time.time()
+        self.adapter.observed(4.0, 5.0, 0.0, now=start)
+        self.drain(self.poses, 0.3)
+        self.assertIn("unobserved", self.adapter.tick(now=start + 30.0))
+        self.drain(self.poses, 0.3)
+        self.adapter.tick(now=start + 31.0)
+        self.assertEqual(self.mine(self.poses, 0.3), [])
+
+    def test_a_floor_slower_than_a_consumers_window_is_refused(self):
+        from spatialdds_ros.config import ConfigError
+        for hz in (1.0, 0.5):
+            with self.subTest(hz=hz):
+                with self.assertRaises(ConfigError) as caught:
+                    config(pose_floor_hz=hz)
+                self.assertIn("flicker", str(caught.exception))
+
+
 class ARefusalReachesWhoeverAsked(_OnABus):
     DOMAIN = 92
 

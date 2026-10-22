@@ -51,6 +51,20 @@ DEFAULT_NAV2_ACTION = "navigate_to_pose"
 #: where a robot sits on the earth with every number looking plausible.
 POSE_SOURCES = ("tf", "amcl", "odom")
 
+#: The slowest this robot's pose goes out, moving or not.
+#:
+#: **Ruled 2026-10-21, from the awareness census.** A consumer stops drawing a
+#: peer it has not heard from within that peer's learned cadence, which is the
+#: only freshness rule the wire allows (`docs/spec-queue.md` §3). So a robot
+#: whose pose source goes quiet when it stops — AMCL publishes on filter
+#: updates, and those need motion — would vanish from every peer's costmap
+#: while standing in its way. The floor keeps every `spatialdds_ros` robot
+#: fresh to every `spatialdds_ros` consumer.
+#:
+#: 2 Hz because a consumer's window never drops below `tempo.IDLE_FLOOR_S`
+#: (1.0 s): a pose every 0.5 s on a BEST_EFFORT lane survives one lost sample.
+DEFAULT_POSE_FLOOR_HZ = 2.0
+
 #: The IDL's bounds on the two reference sequences
 #: (`sequence[str, 8]` and `sequence[KV, 8]` on `spatial.owm.Entity`).
 #: Named here so a refusal can cite the limit rather than just report a
@@ -122,6 +136,7 @@ class Config:
     ground_z: float = 0.0
     pose_source: str = "tf"
     nav2_action: str = DEFAULT_NAV2_ACTION
+    pose_floor_hz: float = DEFAULT_POSE_FLOOR_HZ
     type_uri: str = DEFAULT_TYPE_URI
     label: Optional[str] = None
 
@@ -189,6 +204,15 @@ class Config:
                 f"pose_source {self.pose_source!r} is not one of "
                 f"{', '.join(POSE_SOURCES)}")
 
+        from spatialdds_ros.tempo import IDLE_FLOOR_S
+        if not self.pose_floor_hz > 1.0 / IDLE_FLOOR_S:
+            problems.append(
+                f"pose_floor_hz {self.pose_floor_hz} is too slow: a consumer "
+                f"stops drawing a peer it has not heard from for "
+                f"{IDLE_FLOOR_S:.1f}s, so a stationary robot publishing at "
+                f"this rate would flicker out of its peers' costmaps. It must "
+                f"be above {1.0 / IDLE_FLOOR_S:.1f} Hz; the default is "
+                f"{DEFAULT_POSE_FLOOR_HZ:.1f}")
         if self.domain < 0 or self.domain > 232:
             problems.append(
                 f"domain {self.domain} is outside the DDS range [0, 232]")

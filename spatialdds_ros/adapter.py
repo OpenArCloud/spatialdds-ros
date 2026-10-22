@@ -90,6 +90,7 @@ class RobotAdapter:
         self._goal: Optional[Tuple[float, float]] = None
         self._silent = False
         self._last_seen = 0.0
+        self._last_pose_write = 0.0
         self._navigator = navigator
         # **The last thing that happened to a goal, held until something
         # changes it.** A refusal published once and then superseded by the
@@ -173,10 +174,7 @@ class RobotAdapter:
         self._last_seen = now
         self._silent = False
 
-        self._poses.write(ModelPose(
-            entity_id=self.config.entity_id, pose=pose,
-            source_id=self.config.effective_source_id,
-            stamp=self._entity.stamp))
+        self._write_pose(pose, now, self._entity.stamp)
 
         # The expensive record goes on the cadence — and unconditionally when
         # the robot first appears or comes back, because those are changes of
@@ -265,6 +263,29 @@ class RobotAdapter:
                 notes.append(note)
         return notes
 
+    def _write_pose(self, pose: PoseSE3, now: float, stamp=None) -> None:
+        # A floor republish is stamped when it is sent: it says where the
+        # robot is as of now, which is true for as long as the robot is not
+        # silent — and a silent robot gets no floor.
+        self._poses.write(ModelPose(
+            entity_id=self.config.entity_id, pose=pose,
+            source_id=self.config.effective_source_id,
+            stamp=stamp if stamp is not None else now_time()))
+        self._last_pose_write = now
+
+    def holding(self, now: Optional[float] = None) -> None:
+        """
+        The pose source is alive and its estimate has not changed.
+
+        For a source that only speaks when the robot moves — AMCL publishes
+        on filter updates — silence is not evidence of anything going wrong,
+        so the caller says what it knows: the localizer is still running.
+        That keeps the robot ACTIVE without inventing a new observation; the
+        floor in `tick` then keeps it fresh on the bus.
+        """
+        if self._entity is not None and not self._silent:
+            self._last_seen = time.time() if now is None else now
+
     def tick(self, now: Optional[float] = None) -> Optional[str]:
         """
         Housekeeping between poses: flush the latch when the robot stops
@@ -285,6 +306,14 @@ class RobotAdapter:
             self._entities.write(self._entity)
             self._tempo.forget(self.config.entity_id)
             return f"unobserved after {quiet_for:.1f}s of silence"
+
+        # The floor: the last pose again, freshly stamped, when nothing newer
+        # has gone out for a floor interval. Republishing is not a new
+        # sighting, so it touches neither the silence clock nor the latch
+        # cadence — a robot gone quiet still goes UNOBSERVED on time.
+        if (not self._silent
+                and now - self._last_pose_write >= 1.0 / self.config.pose_floor_hz):
+            self._write_pose(self._entity.pose, now)
 
         if not self._silent and self._tempo.idle(now):
             self._entities.write(self._entity)
