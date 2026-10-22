@@ -65,6 +65,14 @@ POSE_SOURCES = ("tf", "amcl", "odom")
 #: (1.0 s): a pose every 0.5 s on a BEST_EFFORT lane survives one lost sample.
 DEFAULT_POSE_FLOOR_HZ = 2.0
 
+#: How big to draw a peer that publishes no extent — every robot this library
+#: publishes, among others. Ruled 2026-10-21 as a documented default rather
+#: than a required parameter: it is a statement about how to draw a point, not
+#: about anybody's configuration. A TurtleBot 3 Waffle is 0.22 m (the radius
+#: SpatialDDS-demo gives nav2), and the operator's inflation adds to it. An
+#: entity that carries its own extent is drawn by that instead.
+DEFAULT_PEER_RADIUS_M = 0.3
+
 #: The IDL's bounds on the two reference sequences
 #: (`sequence[str, 8]` and `sequence[KV, 8]` on `spatial.owm.Entity`).
 #: Named here so a refusal can cite the limit rather than just report a
@@ -137,6 +145,20 @@ class Config:
     pose_source: str = "tf"
     nav2_action: str = DEFAULT_NAV2_ACTION
     pose_floor_hz: float = DEFAULT_POSE_FLOOR_HZ
+    #: The scene's other moving entities, put into this robot's costmap.
+    #: `docs/awareness-census.md` is the reasoning, and the README says what
+    #: the operator's nav2 configuration has to carry for it.
+    awareness: bool = False
+    #: **No default, and refused when awareness is on without it** (ruled
+    #: 2026-10-21). It is the radius of the clearing ring and the furthest a
+    #: peer is drawn, and it must not exceed the obstacle layer's
+    #: `obstacle_max_range` or `raytrace_max_range`. Those live in the
+    #: operator's nav2 YAML, which this library cannot read; a defaulted value
+    #: beyond them draws marks nothing will ever clear.
+    awareness_range_m: Optional[float] = None
+    peer_radius_m: float = DEFAULT_PEER_RADIUS_M
+    #: Only entities carrying one of these type URIs. Empty: every FAST one.
+    awareness_types: Tuple[str, ...] = ()
     type_uri: str = DEFAULT_TYPE_URI
     label: Optional[str] = None
 
@@ -168,6 +190,8 @@ class Config:
         # waiting for a second robot.
         object.__setattr__(self, "content_refs",
                            tuple(self.content_refs or ()))
+        object.__setattr__(self, "awareness_types",
+                           tuple(self.awareness_types or ()))
         object.__setattr__(self, "external_refs",
                            tuple(tuple(pair) for pair in
                                  (self.external_refs or ())))
@@ -213,6 +237,24 @@ class Config:
                 f"this rate would flicker out of its peers' costmaps. It must "
                 f"be above {1.0 / IDLE_FLOOR_S:.1f} Hz; the default is "
                 f"{DEFAULT_POSE_FLOOR_HZ:.1f}")
+        if self.awareness:
+            if self.awareness_range_m is None:
+                problems.append(
+                    "awareness_range_m is required when awareness is on: set "
+                    "it to your costmap's obstacle range or less (the layer's "
+                    "obstacle_max_range and raytrace_max_range). It is the "
+                    "radius of the ring that clears peers who have gone, and "
+                    "this library cannot read your nav2 configuration — a "
+                    "guessed value beyond your raytrace range draws marks "
+                    "nothing will ever clear")
+            elif not self.awareness_range_m > 0.0:
+                problems.append(
+                    f"awareness_range_m {self.awareness_range_m} must be "
+                    f"positive")
+            if not self.peer_radius_m > 0.0:
+                problems.append(
+                    f"peer_radius_m {self.peer_radius_m} must be positive: a "
+                    f"peer drawn with no size is not drawn")
         if self.domain < 0 or self.domain > 232:
             problems.append(
                 f"domain {self.domain} is outside the DDS range [0, 232]")
@@ -307,6 +349,13 @@ class Config:
                 f"anchor {self.anchor.lat_deg:.8f}, {self.anchor.lon_deg:.8f}, "
                 f"{self.anchor.height_m:.3f} m — publishing {self.frame_id} -> "
                 f"earth-fixed")
+        if self.awareness:
+            notes.append(
+                f"awareness on: the scene's moving entities within "
+                f"{self.awareness_range_m:g} m go into this robot's costmap, "
+                f"each one with no extent drawn as a {self.peer_radius_m:g} m "
+                f"disc" + (f", only types {', '.join(self.awareness_types)}"
+                           if self.awareness_types else ""))
         if self.pose_source == "odom":
             notes.append(
                 "pose_source is odom: odom drifts against map, so this "
