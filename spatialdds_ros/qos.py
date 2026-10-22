@@ -46,7 +46,8 @@ class QosProfile:
     keep_last: Optional[int] = None          # None means KEEP_ALL
     note: str = ""
 
-    def to_qos(self, lifespan_sec: Optional[float] = None):
+    def to_qos(self, lifespan_sec: Optional[float] = None, *,
+               writer: bool = False):
         """This row as a CycloneDDS `Qos`."""
         if not HAVE_CYCLONEDDS:             # pragma: no cover - import shape
             raise RuntimeError(
@@ -70,6 +71,19 @@ class QosProfile:
             # consumer re-deriving staleness.
             policies.append(
                 _qos.Policy.Lifespan(_util.duration(seconds=lifespan_sec)))
+        if writer:
+            # **A writer that goes away does not dispose what it wrote.**
+            # CycloneDDS's default is to dispose a writer's instances when it
+            # is deleted or its lease expires, so a crashed robot's record
+            # reached every reader as NOT_ALIVE_DISPOSED — a deliberate
+            # removal — ten seconds after the crash. Measured 2026-10-21 for
+            # the awareness build, SIGKILL and SIGTERM alike. §2.14 is
+            # explicit that liveliness loss is not removal, and here the
+            # middleware was manufacturing the one from the other on our
+            # behalf. Off, the same events arrive as NOT_ALIVE_NO_WRITERS,
+            # and disposal means what it says: somebody chose it. Not a
+            # request/offered policy, so no reader's matching changes.
+            policies.append(_qos.Policy.WriterDataLifecycle(autodispose=False))
         return _qos.Qos(*policies)
 
 

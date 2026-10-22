@@ -76,7 +76,7 @@ def make_writer(participant: DomainParticipant, topic_name: str,
                 lifespan_sec: Optional[float] = None) -> DataWriter:
     profile = _profile(qos_profile)
     topic = _topic(participant, topic_name, datatype)
-    writer_qos = profile.to_qos(lifespan_sec=lifespan_sec)
+    writer_qos = profile.to_qos(lifespan_sec=lifespan_sec, writer=True)
     return DataWriter(Publisher(participant, qos=profile.to_qos()), topic,
                       qos=writer_qos)
 

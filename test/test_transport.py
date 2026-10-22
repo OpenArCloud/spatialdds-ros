@@ -140,6 +140,39 @@ class SamplesComeBack(unittest.TestCase):
         self.assertTrue(got, "a written entity should reach a reader")
 
 
+
+class AWriterThatLeavesDoesNotRemoveWhatItWrote(unittest.TestCase):
+    """
+    §2.14: liveliness loss is not removal. CycloneDDS's default writer QoS
+    disposes a writer's instances when the writer goes, so a robot that
+    crashed reached every reader as NOT_ALIVE_DISPOSED — measured 2026-10-21,
+    after SIGKILL and SIGTERM alike. `qos.py` turns that off for every writer
+    this library makes; this pins it on the wire.
+    """
+
+    def test_a_deleted_writer_reads_as_gone_not_disposed(self):
+        from spatialdds_ros.adapter import RobotAdapter
+        reader_side = participant(117)
+        reader = tt.make_reader(reader_side, TOPIC, Entity, MODEL_LATCHED.name)
+        writer_side = participant(117)
+        config = Config(scene="transport-test", entity_id="ent:robot:t2",
+                        frame_id="map/transport-test")
+        robot = RobotAdapter(writer_side, config)
+        time.sleep(0.4)
+        robot.observed(1.0, 2.0, 0.0)
+        time.sleep(0.3)
+        tt.take_with_state(reader)
+        del robot
+        del writer_side
+        gc.collect()
+        states, deadline = [], time.time() + 5.0
+        while time.time() < deadline and not states:
+            states = [s.state_name for s in tt.take_with_state(reader)
+                      if not s.alive]
+            time.sleep(0.05)
+        self.assertEqual(states, ["NOT_ALIVE_NO_WRITERS"])
+
+
 class TwoConventionsOnOneTopic(unittest.TestCase):
     """
     What the first real consumer hit, and why topic QoS is now the default.
@@ -342,20 +375,39 @@ class APeerThatDies(unittest.TestCase):
         Both halves. The injection has to actually produce an invalid sample —
         otherwise everything below it passes while testing nothing — and the
         adapter has to come through it having driven the goal exactly once.
+
+        Two peers, because a death arrives in two shapes. A writer made by
+        this library leaves NOT_ALIVE_NO_WRITERS (`qos.py` turns autodispose
+        off, 2026-10-21); a foreign one on CycloneDDS's defaults leaves
+        NOT_ALIVE_DISPOSED. The reader has to survive both.
         """
+        for foreign, expected in ((False, "NOT_ALIVE_NO_WRITERS"),
+                                  (True, "NOT_ALIVE_DISPOSED")):
+            with self.subTest(foreign=foreign):
+                self._a_peer_dies(foreign, expected)
+
+    def _a_peer_dies(self, foreign: bool, expected: str) -> None:
         from cyclonedds.domain import DomainParticipant
+        from cyclonedds.pub import DataWriter
+        from cyclonedds.topic import Topic
         from spatialdds_ros.adapter import RobotAdapter
         navigator = Recording()
+        entity = f"{self.ENTITY}-{'f' if foreign else 'l'}"
         adapter = RobotAdapter(self.p, Config(
-            scene=self.SCENE, entity_id=self.ENTITY,
+            scene=self.SCENE, entity_id=entity,
             frame_id="map/peer-dies"), navigator=navigator)
         adapter.observed(0.0, 0.0, 0.0)
 
         peer = DomainParticipant(self.DOMAIN)
-        writer = tt.make_writer(peer, self.names.command, ModelCommand,
-                                MODEL_COMMAND.name)
+        if foreign:
+            writer = DataWriter(peer, Topic(peer, self.names.command,
+                                            ModelCommand),
+                                qos=MODEL_COMMAND.to_qos())
+        else:
+            writer = tt.make_writer(peer, self.names.command, ModelCommand,
+                                    MODEL_COMMAND.name)
         time.sleep(0.5)                       # let it match before it speaks
-        writer.write(a_goto(self.ENTITY, 4.0, 3.0))
+        writer.write(a_goto(entity, 4.0, 3.0))
 
         # Consumed while the peer is still alive, by both readers.
         payloads, deadline = [], time.time() + 3.0
@@ -381,7 +433,7 @@ class APeerThatDies(unittest.TestCase):
             "the injection produced no lifecycle event, so this test proves "
             "nothing — a peer that dies must leave one behind")
         self.assertFalse(events[0].alive)
-        self.assertEqual(events[0].state_name, "NOT_ALIVE_DISPOSED")
+        self.assertEqual(events[0].state_name, expected)
         self.assertIsNone(events[0].data,
                           "a lifecycle notification carries no payload")
         print(f"\n  the peer's death delivered {len(events)} lifecycle "
