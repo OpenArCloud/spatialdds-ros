@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://relaxng.org/ns/structure/1.0"?>
 <package format="3">
   <name>spatialdds_ros</name>
-  <version>0.3.0</version>
+  <version>0.4.0</version>
   <description>
     Makes a ROS 2 robot a SpatialDDS participant: its pose published as a
     spatial.owm entity on scene-scoped topics, goto commands consumed from
