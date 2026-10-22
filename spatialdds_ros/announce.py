@@ -218,12 +218,31 @@ class Announcer:
         self._writer = tt.make_writer(
             participant, ANNOUNCE_TOPIC, Announce, MODEL_LATCHED.name,
             lifespan_sec=float(ttl_sec))
+        self._last: Optional[Announce] = None
 
     def publish(self) -> str:
         announce = announce_for(self.config, self.kind, self.ttl_sec)
         self._writer.write(announce)
+        self._last = announce
         return (f"announce: {announce.service_id} as {announce.kind.name}, "
                 f"{len(announce.topics)} topics, ttl {announce.ttl_sec}s")
+
+    def depart(self) -> Optional[str]:
+        """
+        Leave the discovery lane on purpose: dispose the announce.
+
+        §3.3's Announce lifecycle: "A node leaving the bus gracefully MUST
+        dispose its Announce instance". Until 0.4.0 this happened only by
+        accident — CycloneDDS disposed every instance of a deleted writer —
+        and that same default made a *crash* look like a departure. With it
+        off (`qos.py`), a graceful exit has to say so, and this is where. An
+        ungraceful one is left to the ttl, which is the spec's backstop.
+        `Depart` (a SHOULD, for non-DDS transports) is not published.
+        """
+        if self._last is None:
+            return None
+        self._writer.dispose(self._last)
+        return f"departed: disposed the announce for {self._last.service_id}"
 
     @property
     def refresh_interval_s(self) -> float:

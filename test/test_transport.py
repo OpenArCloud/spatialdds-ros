@@ -173,6 +173,42 @@ class AWriterThatLeavesDoesNotRemoveWhatItWrote(unittest.TestCase):
         self.assertEqual(states, ["NOT_ALIVE_NO_WRITERS"])
 
 
+
+class AGracefulExitDisposesTheAnnounceAndNothingElse(unittest.TestCase):
+    """
+    The other half of turning autodispose off. A node leaving gracefully MUST
+    dispose its Announce (§3.3), and used to only by accident; the entity it
+    must not, because the robot is not gone — this process is.
+    """
+
+    def test_stop_disposes_the_announce_and_leaves_the_entity(self):
+        from spatialdds_ros.announce import ANNOUNCE_TOPIC
+        from spatialdds_ros.standalone import Runner
+        watcher = participant(118)
+        config = Config(scene="transport-exit", entity_id="ent:robot:t3",
+                        frame_id="map/transport-exit", domain=118)
+        announces = tt.make_reader(watcher, ANNOUNCE_TOPIC, Announce,
+                                   MODEL_LATCHED.name)
+        entities = tt.make_reader(watcher, Topics(config.scene).entity,
+                                  Entity, MODEL_LATCHED.name)
+        runner = Runner(config)
+        runner.start()
+        for _ in range(5):
+            runner.step()
+        time.sleep(0.5)
+        tt.take_with_state(announces)
+        tt.take_with_state(entities)
+        self.assertIn("disposed the announce", runner.stop())
+        states, deadline = [], time.time() + 3.0
+        while time.time() < deadline and not states:
+            states = [s.state_name for s in tt.take_with_state(announces)
+                      if not s.alive]
+            time.sleep(0.05)
+        self.assertEqual(states, ["NOT_ALIVE_DISPOSED"])
+        self.assertEqual([s.state_name for s in tt.take_with_state(entities)
+                          if not s.alive], [])
+
+
 class TwoConventionsOnOneTopic(unittest.TestCase):
     """
     What the first real consumer hit, and why topic QoS is now the default.

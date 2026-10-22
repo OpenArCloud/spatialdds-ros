@@ -129,7 +129,15 @@ class Runner:
                       f"({self.source.x:.2f}, {self.source.y:.2f})", flush=True)
             time.sleep(self.interval)
         print("robot: stopping.", flush=True)
+        note = self.stop()
+        if note:
+            print(f"robot: {note}", flush=True)
         return 0
+
+    def stop(self) -> Optional[str]:
+        """Leave gracefully: the announce is disposed, the entity is not —
+        the robot is not gone, this process is."""
+        return self.announcer.depart()
 
 
 def _parser() -> argparse.ArgumentParser:
