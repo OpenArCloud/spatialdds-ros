@@ -122,9 +122,12 @@ class RobotAdapter:
             frame_ref=robot_frame(self.config.frame_id),
             has_pose=True,
             pose=pose,
-            # A robot locates itself; it does not legislate a region. An
-            # extent here would be read as keep-out by anything applying the
-            # DECLARED rule, which is not what a robot's footprint means.
+            # A robot locates itself; its footprint is not a region anybody
+            # should plan by. (This once said an extent would be read as
+            # keep-out by the DECLARED rule; the robot is OBSERVED, and that
+            # rule excludes it on basis first — awareness census §2.) A true
+            # footprint, for consumers that draw peers by size, is a filed
+            # follow-up rather than something to guess here.
             has_extent=False,
             extent=Aabb3(min_xyz=[0.0, 0.0, 0.0], max_xyz=[0.0, 0.0, 0.0]),
             properties=properties,

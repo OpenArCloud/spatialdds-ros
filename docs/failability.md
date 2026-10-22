@@ -1,6 +1,6 @@
 # Shown failable
 
-Acceptance item 4, kept up as the library grows. Four claims this library
+Acceptance item 4, kept up as the library grows. The claims this library
 makes are asserted by tests, and an assertion is worth nothing until it has
 been seen to fail. Each was broken deliberately and the failures recorded
 here, with the exact output.
@@ -192,6 +192,49 @@ The fix must also not be "stopped applying QoS", so two controls sit beside
 it: `test_the_profile_still_reaches_both_endpoints`, and a library writer
 exchanging real samples with a reader built the other convention's way.
 Deadline alone is request/offered, and a mismatch there is silence.
+
+---
+
+## 5. Awareness, 0.4.0
+
+The awareness build (`awareness-census.md`, ruled 2026-10-21) added claims
+whose failure mode is a planner avoiding the wrong thing or nothing: a robot
+avoiding itself, a peer that has gone still lethal, a peer drawn where it
+never was. Each was broken in the file, **the plant grepped for before its
+result counted**, the named tests run, the file restored and compared byte
+for byte with `cmp`, and the tests re-run green.
+
+| claim | injected | what failed |
+|---|---|---|
+| composition goes the right way | `from_earth` rotates by `q`, not its conjugate | `test_their_north_is_our_north`, `test_their_origin_lands_where_their_anchor_is` |
+| a stationary robot stays fresh | the floor's republish removed from `tick` | `test_a_stationary_robot_is_republished`, `test_a_holding_localizer_keeps_the_robot_active_and_fresh` |
+| a holding localizer keeps it ACTIVE | `holding()` a no-op | `test_a_holding_localizer_keeps_the_robot_active_and_fresh` |
+| it never avoids itself | the `entity_id` check disabled | `test_its_own_entity_is_heard_and_not_drawn`; and through ROS, `test_1`: `109 != 0 : B drew something: width 109, min_r 0.0, max_r 0.29` — B drawing itself at its own origin |
+| a quiet peer fades | the window check disabled | `test_a_quiet_peer_fades_after_its_window_and_is_kept`, `test_a_slow_peer_earns_a_longer_window`, `test_a_killed_peer_fades_on_its_window_then_reads_as_gone` |
+| an unplaceable peer is skipped, not defaulted | composition bypassed, raw pose used | `test_an_unanchored_frame_is_skipped_with_its_reason`, `test_once_both_frames_are_georeferenced_it_is_placed` |
+| nothing is drawn on the ring | the rim margin removed | `test_nothing_drawn_reaches_the_clearing_ring` |
+| a crash is not a removal | autodispose back on | `test_a_deleted_writer_reads_as_gone_not_disposed`, `test_a_killed_peer_fades_on_its_window_then_reads_as_gone`, `test_a_peer_that_leaves_cleanly_is_gone_at_once` |
+| a graceful exit disposes the announce | `depart()` a no-op | `test_stop_disposes_the_announce_and_leaves_the_entity` |
+| **no ghost** | B's nav2 layer without the clearing source | two-domain `test_5` and `test_7`: A's cells stayed lethal after A went |
+| the README's stanza is the one that ran | its first `raytrace_max_range` 8.5 → 9.5 | `test_the_nav2_stanza_is_the_one_the_acceptance_ran` |
+| the README's range is inside the stanza's | the fence's `awareness_range_m` 8.0 → 12.0 | the same |
+
+**Three plants misfired, and are recorded as their own class** — each would
+have read as a pass:
+
+1. The first awareness round ran under zsh, which does not word-split an
+   unquoted `$4`: pytest was handed one argument naming a file that does not
+   exist, printed nothing the filter matched, and every plant was present with
+   no result. Rerun under bash; the rows above are that run.
+2. The first two-domain self-exclusion plant made the *bring-up* fail: setup
+   waited for `awareness: self 1`, which the plant suppresses, so all eight
+   steps errored in setup — and because `tearDownClass` does not run when
+   `setUpClass` raises, its containers were left running. Setup now waits on
+   the node owning its entity, tears down on failure, and step 1 asserts the
+   cloud before the log line, so the plant fails on what it breaks.
+3. The first README stanza plant used GNU sed's `0,/re/` address, which BSD
+   sed does not have: the grep found the plant 0 times, and its pass did not
+   count. Redone with a Python replace.
 
 ---
 

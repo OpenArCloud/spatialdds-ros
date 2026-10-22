@@ -236,6 +236,16 @@ preference: the obstacle layer raytraces to clear cells its sensors see
 through, so a virtual obstacle producing no real returns is marked and then
 promptly cleared. Filters are nav2's mechanism for policy-derived exclusion.
 
+> **Withdrawn 2026-10-21, on measurement** (`awareness-census.md` §1, the
+> `scan_lidar` row). With a real-lidar source in the *same* layer, every ray
+> passing through a virtual peer, the peer stayed lethal: each cycle clears
+> and then marks, so a virtual source that keeps publishing re-marks every
+> cycle. The argument holds for a mark nobody refreshes — a keep-out
+> published once and latched — and that remains a good reason for the
+> demo's filter. It is no reason against a live virtual sensor, which is
+> what awareness is. "Survive verbatim" is withdrawn; the filter's case
+> rests on the mark being one-shot, not on raytracing in general.
+
 ## 10. Process shape
 
 | what | where | current | verdict |

@@ -89,9 +89,11 @@ site refer to it rather than restate it.
 
 ---
 
-## 3. A FAST entity has no freshness contract
+## 3. A FAST entity has no freshness contract — the 1.9 question
 
-**Raised 2026-10-21, the awareness census (`awareness-census.md` §3).**
+**Raised 2026-10-21, the awareness census (`awareness-census.md` §3); ruled
+the same day.** The question for 1.9: **should entity poses carry a refresh
+contract the way announcements carry `ttl_sec`?**
 
 A consumer planning around another robot has to decide when that robot stops
 being where it was last seen. Nothing on the wire says. `Entity` has no ttl;
@@ -101,10 +103,22 @@ Announce; and `TopicMeta.target_rate_hz = 0` means *unspecified*. So a
 publisher that speaks only when its entity moves and one that has died look
 the same until something else says otherwise.
 
-**What the library does meanwhile.** Learns each peer's cadence from its own
-poses (`Tempo`, the derivation the adapter uses for its own silence) and
-stops projecting a peer once that cadence is broken. The record is kept, per
-§2.14.
+**The origin, measured.** A stationary robot vanished from its peers'
+costmaps while standing in their way: `spatialdds_ros`'s own robot, in
+`pose_source=amcl`, publishes only when AMCL does, and AMCL's filter updates
+need motion. The two-domain acceptance reproduces the case with a localizer
+that converges and falls silent (`test/ros/fake_amcl.py`).
+
+**What the library does meanwhile — and why the gap is now foreign-only.**
+Consuming: it learns each peer's cadence from its own poses (`Tempo`, the
+derivation the adapter uses for its own silence) and stops projecting a peer
+once that cadence is broken; the record is kept, per §2.14. Publishing: every
+`spatialdds_ros` robot sends its pose at least `pose_floor_hz` (2 Hz) moving
+or not, so any `spatialdds_ros` robot is always fresh to any `spatialdds_ros`
+consumer — shown in the acceptance, A drawn in all 31 samples of 20 s
+standing still. The gap that remains is a **foreign** publisher's: a consumer
+has no way to know what cadence it promises, and so no way to tell its
+stillness from its absence.
 
 **What the spec might do.** Let a FAST entity's publisher state its cadence —
 a non-zero `target_rate_hz` given meaning, or a heartbeat promise on the pose
@@ -155,3 +169,20 @@ evidence breaks neither sentence, but the text does not say so.
 
 **What the spec might do.** A non-normative line distinguishing the record
 from what a consumer derives from it.
+
+---
+
+## 7. Whether `Entity.extent` is about the frame or the pose is unstated
+
+**Raised 2026-10-21, building the awareness consumer.**
+
+`Entity.extent` is "the axis-aligned fallback" for an area entity's footprint
+(1.8-full:6696), and `SpatialZone` bounds are "axis-aligned in frame_ref"
+(1.8-full:4817). Nothing says whether a *moving* entity's extent is in frame
+coordinates — fixed while its pose moves — or about its pose. SpatialDDS-demo's
+consumer reads it in frame coordinates (`keepout.py:174-177`), which is right
+for a pond and wrong for a forklift.
+
+**What the library does meanwhile.** Reads it as frame coordinates, as the
+demo does, and publishes no extent for its own robots, so the question does
+not arise for them.

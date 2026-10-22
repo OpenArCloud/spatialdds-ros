@@ -317,8 +317,10 @@ One consumer within `robot_node`, following the established shape:
    `spatialdds_ros.robot_node`. If nothing else matches, the spec skips
    whenever the tier is up — a self-re-arming skip. Read, not run.
 4. **`keepout_node`'s obstacle-layer argument is broader than what was
-   measured** (§1, `scan_lidar`). It is right for a latched one-shot mark and
-   wrong for a live virtual sensor.
+   measured** (§1, the fourth row of the table, `scan_lidar`: a real lidar's
+   rays through a live virtual peer left it at 100 in every phase). It is
+   right for a latched one-shot mark and wrong for a live virtual sensor. The
+   claim stays withdrawn with that row as its citation.
 5. Minor: `sendGoto` uses z = −1.15 (`robot-captures.spec.ts:99`) against
    `GROUND_Z = −0.84` (`plaza.py:31`); the header of
    `tools/capture_robot_session.sh` still gives the start as (17.0, −21.5)
@@ -334,3 +336,52 @@ One consumer within `robot_node`, following the established shape:
 3. **With `pose_source=amcl`, a stopped robot stops publishing poses** (§3),
    and to any consumer applying a freshness window it reads as gone. Read
    from the code and AMCL's documented update rule, not measured.
+
+---
+
+## 8. Ruled, 2026-10-21, and what the build found
+
+**Ruled as proposed**, with one build item added:
+
+1. Output form: the point cloud with a clearing ring, on the measured table.
+2. Staleness as in §3, separated from deletion per §2.14 — **plus a floor-rate
+   republish on the publish side**, so a `spatialdds_ros` robot is fresh to a
+   `spatialdds_ros` consumer whether or not it moves. `pose_floor_hz`, 2 Hz,
+   refused at or below 1 Hz. In AMCL mode a live AMCL publisher counts as
+   holding the estimate. The freshness entry in `spec-queue.md` (§3) now
+   carries the 1.9 question and says the gap is foreign-only.
+3. Self-exclusion asserted on the consumer's output, with the reason in the
+   tests' comments.
+4. The topic-name mismatch: correctly filed, a pre-stamp decision for James.
+5. Surface: a mode of the robot node; `awareness_range_m` refused unset with
+   awareness on; `peer_radius_m` 0.3, an entity's own extent winning;
+   allowlist empty means every moving entity; window and ROS topic names as
+   convention. Publish-side footprint: a library follow-up, not this batch.
+
+**What the build found that the census did not:**
+
+- **A crash read as a removal.** CycloneDDS's default writer QoS disposes a
+  writer's instances when it goes, so a killed robot reached every reader as
+  `NOT_ALIVE_DISPOSED` — measured, SIGKILL and SIGTERM alike, at its 10 s
+  lease. §3's table assumed `NOT_ALIVE_NO_WRITERS`, which is what liveliness
+  loss *should* look like and now does: every writer here turns autodispose
+  off. That fix removed the accident that had been disposing the announce on
+  a clean exit, so `Runner.stop()` now disposes it deliberately, as the
+  Announce lifecycle requires.
+- **A dead peer goes on its window, not its lease.** Killed: dropped as quiet
+  at 1.04 s on the bus and within 2.8 s in B's costmap through nav2, read as
+  "writer gone" only at 10.0 s. The window does the work; the lease confirms.
+- **The window is learned at the consumer's poll rate.** The pose lane is
+  KEEP_LAST(1), so a poll sees at most one pose per peer, and the learned gap
+  is never shorter than the poll interval: the window's real bound is
+  `max(1 s, 3 × max(peer interval, poll interval))`. The node polls at
+  `rate_hz`; a test that polled once a second learned a three-second window.
+- **A mark on the ring is never cleared.** nav2 clears the cells a ray passes
+  through, not the one it ends in, so drawn points stay `RIM_M` (0.25 m)
+  inside the ring.
+- **Extent's frame is unstated** in the spec: filed (`spec-queue.md` §7).
+
+**Library follow-ups, filed:** a publish-side footprint (the robot announcing
+its true size, so consumers stop drawing it as a 0.3 m disc); `Depart` on the
+discovery lane (a SHOULD, not done); and the robot node has no announcer at
+all, so only the standalone runner departs.
