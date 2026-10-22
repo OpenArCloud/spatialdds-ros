@@ -217,3 +217,83 @@ def geodetic_of(t) -> Tuple[float, float, float]:
         lat = math.atan2(z, p * (1.0 - e2 * n / (n + h)))
     n = a / math.sqrt(1.0 - e2 * math.sin(lat) ** 2)
     return math.degrees(lat), math.degrees(lon), p / math.cos(lat) - n
+
+
+# --- composition: another frame's point, in this robot's frame ------------
+#
+# **Written here, beside the projection, so there is one place.** The
+# awareness consumer places other entities in this robot's frame, and the only
+# arithmetic that may do that is this: a second copy in the consumer would make
+# a drift between two robots look like a disagreement about where a peer is.
+#
+# The convention is the one `georeference` publishes and its tests compose:
+# `T_parent_child` is the child frame's pose *in* earth-fixed, so
+#
+#     p_earth = t + R(q) · p_local         and back:  p_local = Rᵀ(q) · (p_earth - t)
+
+
+def rotate(q, v) -> list:
+    """`v` rotated by the unit quaternion `q` = (x, y, z, w)."""
+    x, y, z, w = q
+    # v' = v + 2w(u×v) + 2u×(u×v), with u = (x, y, z)
+    cx = y * v[2] - z * v[1]
+    cy = z * v[0] - x * v[2]
+    cz = x * v[1] - y * v[0]
+    return [v[0] + 2.0 * (w * cx + y * cz - z * cy),
+            v[1] + 2.0 * (w * cy + z * cx - x * cz),
+            v[2] + 2.0 * (w * cz + x * cy - y * cx)]
+
+
+def to_earth(pose: PoseSE3, point) -> list:
+    """A point in a georeferenced frame, in earth-fixed metres."""
+    r = rotate(pose.q, point)
+    return [pose.t[i] + r[i] for i in range(3)]
+
+
+def from_earth(pose: PoseSE3, point) -> list:
+    """An earth-fixed point, in the frame `pose` georeferences."""
+    x, y, z, w = pose.q
+    d = [point[i] - pose.t[i] for i in range(3)]
+    return rotate((-x, -y, -z, w), d)
+
+
+def frame_problem(ref: FrameRef) -> Optional[str]:
+    """
+    Why a frame cannot be used as given, or `None`.
+
+    Two checks, both of which would otherwise place something wrongly with no
+    error anywhere: a uuid that is not the one its name derives to means two
+    frames are sharing a name; a declared scale other than metres would need a
+    conversion this library does not attempt in v1.
+    """
+    if ref.uuid and ref.uuid != frame_uuid(ref.fqn):
+        return (f"frame {ref.fqn!r} carries uuid {ref.uuid}, not the "
+                f"{frame_uuid(ref.fqn)} its name derives to: two frames "
+                f"sharing a name")
+    if ref.has_scale and abs(ref.meters_per_unit - 1.0) > 1e-9:
+        return (f"frame {ref.fqn!r} declares {ref.meters_per_unit} m per "
+                f"unit; only metric frames are composed")
+    return None
+
+
+def compose_point(point, from_fqn: str, to_fqn: str,
+                  georeferences) -> Tuple[Optional[list], Optional[str]]:
+    """
+    `point`, given in `from_fqn`, expressed in `to_fqn`.
+
+    Returns ``(point, None)`` or ``(None, reason)`` — **never a defaulted
+    position.** The same frame needs nothing; two different frames need both
+    georeferences (`georeferences` maps a frame fqn to its `T_parent_child`),
+    and if either is missing the honest answer is that the point cannot be
+    placed. A peer drawn at a guessed position is worse than one not drawn.
+    """
+    if from_fqn == to_fqn:
+        return list(point), None
+    theirs = georeferences.get(from_fqn)
+    mine = georeferences.get(to_fqn)
+    if mine is None:
+        return None, (f"no georeference for this robot's frame {to_fqn!r}, "
+                      f"so nothing in another frame can be composed into it")
+    if theirs is None:
+        return None, f"no georeference for {from_fqn!r}"
+    return from_earth(mine, to_earth(theirs, point)), None

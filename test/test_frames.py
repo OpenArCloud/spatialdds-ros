@@ -198,5 +198,84 @@ class YawIsAboutUp(unittest.TestCase):
         self.assertEqual(yaw_quaternion(0.0), [0.0, 0.0, 0.0, 1.0])
 
 
+
+class ComposingAnotherFrame(unittest.TestCase):
+    """
+    A peer's point in its frame, placed in this robot's.
+
+    Checked against geography computed separately — metres per degree at the
+    latitude — rather than against the inverse of the same code, which would
+    agree with an inverted transform as happily as with a correct one.
+    """
+
+    #: 100 m east and 50 m north of ANCHOR, by the small-angle rule.
+    EAST_M, NORTH_M = 100.0, 50.0
+
+    def setUp(self):
+        from spatialdds_ros.frames import compose_point  # noqa: F401
+        lat = ANCHOR.lat_deg + self.NORTH_M / 111_320.0
+        lon = ANCHOR.lon_deg + self.EAST_M / (
+            111_320.0 * math.cos(math.radians(ANCHOR.lat_deg)))
+        self.mine = georeference("map/mine", ANCHOR).T_parent_child
+        self.theirs = georeference(
+            "map/theirs", Anchor(lat, lon, ANCHOR.height_m)).T_parent_child
+        self.book = {"map/mine": self.mine, "map/theirs": self.theirs}
+
+    def test_their_origin_lands_where_their_anchor_is(self):
+        from spatialdds_ros.frames import compose_point
+        got, why = compose_point([0.0, 0.0, 0.0], "map/theirs", "map/mine",
+                                 self.book)
+        self.assertIsNone(why)
+        # The small-angle rule is good to centimetres at 100 m; z is the
+        # earth's curvature over that distance, under a millimetre per metre.
+        self.assertAlmostEqual(got[0], self.EAST_M, delta=0.3)
+        self.assertAlmostEqual(got[1], self.NORTH_M, delta=0.3)
+        self.assertLess(abs(got[2]), 0.01)
+
+    def test_their_north_is_our_north(self):
+        """Orientation, which a correct origin cannot show."""
+        from spatialdds_ros.frames import compose_point
+        got, _ = compose_point([0.0, 10.0, 0.0], "map/theirs", "map/mine",
+                               self.book)
+        self.assertAlmostEqual(got[0], self.EAST_M, delta=0.3)
+        self.assertAlmostEqual(got[1], self.NORTH_M + 10.0, delta=0.3)
+
+    def test_the_same_frame_needs_no_georeference(self):
+        """The bare-scene case: one shared frame, nothing to compose."""
+        from spatialdds_ros.frames import compose_point
+        got, why = compose_point([3.0, -2.0, 0.0], "map/bare", "map/bare", {})
+        self.assertEqual((got, why), ([3.0, -2.0, 0.0], None))
+
+    def test_a_missing_georeference_is_a_reason_not_a_position(self):
+        from spatialdds_ros.frames import compose_point
+        for book, needle in (({"map/mine": self.mine}, "map/theirs"),
+                             ({"map/theirs": self.theirs}, "this robot")):
+            with self.subTest(missing=needle):
+                got, why = compose_point([0.0, 0.0, 0.0], "map/theirs",
+                                         "map/mine", book)
+                self.assertIsNone(got)
+                self.assertIn(needle, why)
+
+    def test_a_frame_sharing_a_name_is_refused(self):
+        from spatialdds_ros.frames import frame_problem
+        ref = robot_frame("map/x")
+        self.assertIsNone(frame_problem(ref))
+        ref.uuid = frame_uuid("map/y")
+        self.assertIn("two frames sharing a name", frame_problem(ref))
+
+    def test_a_non_metric_frame_is_refused(self):
+        from spatialdds_ros.frames import frame_problem
+        ref = robot_frame("map/x")
+        ref.meters_per_unit = 0.01
+        self.assertIn("only metric frames", frame_problem(ref))
+
+    def test_rotate_agrees_with_the_independent_copy(self):
+        from spatialdds_ros.frames import rotate
+        q = enu_to_ecef_pose(SOUTH_EAST.lat_deg, SOUTH_EAST.lon_deg, 0.0)[1]
+        for v in ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.3, -2.0, 5.0]):
+            for a, b in zip(rotate(q, v), _rotate(q, v)):
+                self.assertAlmostEqual(a, b, places=9)
+
+
 if __name__ == "__main__":
     unittest.main()
