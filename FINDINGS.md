@@ -136,3 +136,55 @@ settle could then be counted as a live conflict. The existing test
 ("the registered entity topic is not the one in use") is resolved at v1.8,
 which registers `model_entity` on `spatialdds/<scene>/world/entity/v1`, the
 name this library already uses.
+
+## 10. A dead sim stays ACTIVE: the latest transform is read as a new sighting
+
+*Filed and fixed 2026-10-25, found by SpatialDDS-demo's acceptance run on
+0.3.0 against its nav2 tier. Affects 0.3.0 and 0.4.0.*
+
+With `pose_source: tf` (the default), the node takes the robot's pose with
+`lookup_transform(map, base, Time())`, "the latest available", every tick,
+and calls `adapter.observed()` with it. When the pose's publisher dies, the
+buffer keeps answering with the last transform it heard, so the adapter is
+told of a sighting every tick and its silence rule never fires. Measured:
+40 s after `pkill plaza_sim_node.py` the record was still `ACTIVE`,
+restamped every 5 s, at the sim's last pose.
+
+With 0.4.0's pose floor it is worse than a stale record: the floor
+republishes that pose as fresh, so a dead robot is an actively published
+ghost. A consumer's staleness rule (this library's own awareness node
+among them) cannot catch it, because the publisher is alive and chatty.
+That is the failure the awareness design exists to prevent, inverted on
+the publishing side.
+
+**Fixed in 0.4.1:** a transform whose stamp is the one the buffer answered
+with last time is not an observation (`TfFreshness`). The comparison is
+stamp to stamp, never to a clock, so sim time and wall time are treated
+alike. The adapter's own cadence-learned threshold then declares the robot
+`UNOBSERVED`, and the floor stops, as it already does for a silent robot.
+
+## 11. nav2's answer to a goal went nowhere
+
+*Filed and fixed 2026-10-25, from the same run. Affects 0.3.0 and 0.4.0.*
+
+The nav2 navigator sent each goal with `send_goal_async` and read nothing
+back, and logged "nav2 accepted a goal" before nav2 had answered. A goal
+nav2 rejected, or accepted and then aborted ("Goal failed": no plan into a
+declared keep-out), reached the robot's log and no client. The kinematic
+fallback has always reported its refusals on the robot's latched record
+(`nav.status`), so a client saw a refusal from one navigator and silence
+from the other.
+
+**Fixed in 0.4.1:** the goal's response and its result are read, and a
+rejected, aborted or cancelled goal becomes `adapter.refused()`, on the
+record. Only the latest goal reports: a goal that ended because a newer one
+superseded it is not news about the robot. The log line now says "sent".
+
+Acceptance for both, against SpatialDDS-demo's nav2 tier with this tree in
+the robot image: a goal into the declared pond came back on the robot's
+record through the web gateway as "goal (10.00, -12.00) abandoned: nav2
+could not reach it"; and the demo's `robot-captures.spec.ts`, "the sim
+dies, and both the watching tab and a late one are told", which is marked
+`test.fail` for finding 10, reported "Expected to fail, but passed".
+`test/test_node_honesty.py` holds both decisions without ROS; a plant of
+each fails it.

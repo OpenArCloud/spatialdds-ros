@@ -198,6 +198,7 @@ def main(argv=None) -> int:                                   # pragma: no cover
                 from tf2_ros import Buffer, TransformListener
                 self._tf_buffer = Buffer()
                 self._tf_listener = TransformListener(self._tf_buffer, self)
+                self._tf_freshness = TfFreshness()
                 self._read_pose = self._pose_from_tf
             elif source == "amcl":
                 from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -224,6 +225,14 @@ def main(argv=None) -> int:                                   # pragma: no cover
                 # Not an error worth logging every tick: a localizer that has
                 # not converged yet simply has no transform, and the adapter's
                 # own silence handling already describes that state correctly.
+                return
+            # A transform the buffer has already answered with is not a new
+            # observation. Asked for "the latest", the buffer keeps returning
+            # the last transform it heard after its publisher has died, and
+            # calling that a sighting every tick kept a dead robot ACTIVE and
+            # freshly stamped forever -- the floor republishing a ghost the
+            # adapter's silence rule could never catch (finding 10).
+            if not self._tf_freshness.new(tf.header.stamp):
                 return
             t = tf.transform.translation
             self.adapter.observed(t.x, t.y, _yaw_of(tf.transform.rotation))
@@ -378,6 +387,9 @@ def main(argv=None) -> int:                                   # pragma: no cover
             self._goal_type = NavigateToPose
             self._client = ActionClient(node, NavigateToPose, action_name)
             self._action_name = action_name
+            # Only the latest goal may report. A goal superseded by a newer
+            # one ends too, and its ending is not news about the robot.
+            self._seq = 0
 
         def available(self) -> Optional[str]:
             if not self._client.server_is_ready():
@@ -397,8 +409,48 @@ def main(argv=None) -> int:                                   # pragma: no cover
             goal.pose.pose.position.y = y
             goal.pose.pose.position.z = self._node.config.ground_z
             goal.pose.pose.orientation.w = 1.0
-            self._client.send_goal_async(goal)
-            return f"nav2 accepted a goal at ({x:.2f}, {y:.2f})"
+            self._seq += 1
+            seq = self._seq
+            future = self._client.send_goal_async(goal)
+            future.add_done_callback(
+                lambda f: self._on_response(f, seq, x, y))
+            # Sent, not accepted: nav2 has not answered yet. Until 0.4.1 this
+            # said "accepted", and whatever nav2 then decided went nowhere: a
+            # rejected or aborted goal reached the robot's log and no client
+            # (finding 11).
+            return f"sent a goal at ({x:.2f}, {y:.2f}) to nav2"
+
+        def _on_response(self, future, seq: int, x: float, y: float) -> None:
+            if seq != self._seq:
+                return
+            try:
+                handle = future.result()
+            except Exception as error:                        # noqa: BLE001
+                self._refuse(f"goal ({x:.2f}, {y:.2f}) could not be sent to "
+                             f"nav2: {error}")
+                return
+            if not handle.accepted:
+                self._refuse(goal_outcome(False, None, x, y))
+                return
+            handle.get_result_async().add_done_callback(
+                lambda f: self._on_result(f, seq, x, y))
+
+        def _on_result(self, future, seq: int, x: float, y: float) -> None:
+            if seq != self._seq:
+                return
+            try:
+                status = future.result().status
+            except Exception as error:                        # noqa: BLE001
+                self._refuse(f"goal ({x:.2f}, {y:.2f}): nav2 gave no result: "
+                             f"{error}")
+                return
+            why = goal_outcome(True, status, x, y)
+            if why:
+                self._refuse(why)
+
+        def _refuse(self, why: str) -> None:
+            self._node.adapter.refused(why)
+            self._node.get_logger().info(why)
 
     try:
         node = SpatialDdsRobot()
@@ -414,6 +466,49 @@ def main(argv=None) -> int:                                   # pragma: no cover
         node.destroy_node()
         rclpy.shutdown()
     return 0
+
+
+class TfFreshness:
+    """Whether a looked-up transform is a new observation, by its stamp.
+
+    Compared stamp to stamp, never to a clock, so a sim on its own time and a
+    robot on wall time are treated alike: a transform is new if its stamp is
+    not the one the buffer answered with last time.
+    """
+
+    def __init__(self) -> None:
+        self._last: Optional[tuple] = None
+
+    def new(self, stamp) -> bool:
+        key = (int(stamp.sec), int(stamp.nanosec))
+        if key == self._last:
+            return False
+        self._last = key
+        return True
+
+
+#: action_msgs/GoalStatus, the three endings.
+GOAL_SUCCEEDED, GOAL_CANCELED, GOAL_ABORTED = 4, 5, 6
+
+
+def goal_outcome(accepted: bool, status: Optional[int],
+                 x: float, y: float) -> Optional[str]:
+    """The refusal a goal's ending owes its requester, or None if it arrived.
+
+    A goal nav2 would not take, or gave up on, travels to whoever asked on the
+    robot's latched record (`RobotAdapter.refused`), as the kinematic fallback's
+    refusals always have.
+    """
+    if not accepted:
+        return f"goal ({x:.2f}, {y:.2f}) rejected by nav2"
+    if status == GOAL_SUCCEEDED:
+        return None
+    if status == GOAL_ABORTED:
+        return (f"goal ({x:.2f}, {y:.2f}) abandoned: nav2 could not reach it "
+                f"(no plan, or the controller gave up)")
+    if status == GOAL_CANCELED:
+        return f"goal ({x:.2f}, {y:.2f}) cancelled before it was reached"
+    return f"goal ({x:.2f}, {y:.2f}) ended in nav2 status {status}"
 
 
 def _yaw_of(q) -> float:
