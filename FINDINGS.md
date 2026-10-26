@@ -188,3 +188,36 @@ dies, and both the watching tab and a late one are told", which is marked
 `test.fail` for finding 10, reported "Expected to fail, but passed".
 `test/test_node_honesty.py` holds both decisions without ROS; a plant of
 each fails it.
+
+## 12. A preempting goal can be reported succeeded where it was never driven
+
+*Filed 2026-10-26 from SpatialDDS-demo's OWM 0.2 batch, on the nav2 tier,
+against 0.4.1. Not fixed: nav2's behaviour, reported faithfully, with a
+check the node could add.*
+
+Since 0.4.1 the node reports what nav2 decides about each goal. A goal sent
+while nav2 is still finishing the last one is a preemption, and measured on
+the demo's tier nav2 then reports the *new* goal succeeded at the old goal's
+position, in the same tick:
+
+```
+[bt_navigator]: Received goal preemption request
+[spatialdds_robot]: sent a goal at (17.00, -23.00) to nav2 (asked by playwright)
+[controller_server]: Reached the goal!
+[bt_navigator]: Goal succeeded
+```
+
+The robot was at (12.3, -2.1), 0.33 m from the goal being preempted and
+21 m from the new one, and it never moved. SUCCEEDED owes no refusal, so
+nothing reached the robot's record: a client that asked to go to (17, -23)
+was told nothing, which reads as "on its way" for as long as it waits.
+Seen three times while writing the demo's `claims-stack.spec.ts`, each
+time as a return goal sent within seconds of arriving near the first, and
+never driven, with nothing on the robot's record. nav2's own log, above,
+was read for the third; for the first two, only the robot node's log, which
+shows the goal sent and no outcome.
+
+**The check the node could add:** on SUCCEEDED, compare the robot's pose
+with the goal, and if it is further than the goal tolerance, report a
+refusal ("nav2 reported success 21.0 m from the goal"), which is what the
+requester needs to hear. `goal_outcome` would take the distance.
