@@ -192,8 +192,8 @@ each fails it.
 ## 12. A preempting goal can be reported succeeded where it was never driven
 
 *Filed 2026-10-26 from SpatialDDS-demo's OWM 0.2 batch, on the nav2 tier,
-against 0.4.1. Not fixed: nav2's behaviour, reported faithfully, with a
-check the node could add.*
+against 0.4.1; fixed 2026-10-27. nav2's behaviour, reported faithfully until
+0.4.2, which adds the check below.*
 
 Since 0.4.1 the node reports what nav2 decides about each goal. A goal sent
 while nav2 is still finishing the last one is a preemption, and measured on
@@ -221,3 +221,18 @@ shows the goal sent and no outcome.
 with the goal, and if it is further than the goal tolerance, report a
 refusal ("nav2 reported success 21.0 m from the goal"), which is what the
 requester needs to hear. `goal_outcome` would take the distance.
+
+**Fixed in 0.4.2:** that check. On SUCCEEDED the node measures from its own
+last pose to the goal, and further than `ARRIVAL_TOLERANCE_M` (1.0 m) the
+success becomes `adapter.refused()`, "goal (17.00, -23.00) not reached: nav2
+reported success 21.0 m from the goal". The tolerance is not nav2's: the
+node cannot read the goal checker's `xy_goal_tolerance` (0.25 m by default,
+0.35 m on the demo's tier), and its pose lags a tick and, with `pose_source
+odom`, drifts from the map frame the goal is in, so it is deliberately looser
+than any goal checker. With no pose yet, nav2's word stands, as there is no
+record to amend. `test/test_node_honesty.py` holds the decision without ROS;
+a plant that skips the distance check fails two of its tests, and one that
+refuses at exactly the tolerance fails one. The wiring in the node, which
+needs rclpy, was not run against the nav2 tier for this release; the demo's
+`claims-stack.spec.ts` waits for the robot to stand still before a goal, so
+it no longer provokes the preemption either.

@@ -444,7 +444,10 @@ def main(argv=None) -> int:                                   # pragma: no cover
                 self._refuse(f"goal ({x:.2f}, {y:.2f}): nav2 gave no result: "
                              f"{error}")
                 return
-            why = goal_outcome(True, status, x, y)
+            robot = self._node.adapter.pose
+            distance = (None if robot is None
+                        else math.hypot(robot[0] - x, robot[1] - y))
+            why = goal_outcome(True, status, x, y, distance)
             if why:
                 self._refuse(why)
 
@@ -490,18 +493,40 @@ class TfFreshness:
 #: action_msgs/GoalStatus, the three endings.
 GOAL_SUCCEEDED, GOAL_CANCELED, GOAL_ABORTED = 4, 5, 6
 
+#: How far from its goal a robot may be when nav2 reports success, before the
+#: node says it was not reached (finding 12). nav2's goal checker decides
+#: arrival by its own `xy_goal_tolerance`: 0.25 m by default
+#: (`nav2_controller::SimpleGoalChecker`), 0.35 m on SpatialDDS-demo's tier
+#: (`robot_tier/nav2_params.yaml`). The node cannot read the controller's
+#: parameter, and its own pose arrives a tick later and, with
+#: `pose_source odom`, in a frame that drifts from the map the goal is in. So
+#: this is deliberately looser than any goal checker, and catches what was
+#: measured: a preempting goal reported succeeded 21 m from where it was.
+ARRIVAL_TOLERANCE_M = 1.0
+
 
 def goal_outcome(accepted: bool, status: Optional[int],
-                 x: float, y: float) -> Optional[str]:
+                 x: float, y: float,
+                 distance: Optional[float] = None) -> Optional[str]:
     """The refusal a goal's ending owes its requester, or None if it arrived.
 
     A goal nav2 would not take, or gave up on, travels to whoever asked on the
     robot's latched record (`RobotAdapter.refused`), as the kinematic fallback's
     refusals always have.
+
+    So does a success reported where the robot is not. `distance` is the
+    robot's own, from its last pose to the goal. A goal sent while nav2 is
+    finishing the last one is a preemption, and nav2 has reported the *new*
+    goal succeeded at the old goal's position in the same tick, the robot never
+    moving (finding 12). With no pose there is nothing to compare, and nav2's
+    word stands: the robot has no record yet for a refusal to amend.
     """
     if not accepted:
         return f"goal ({x:.2f}, {y:.2f}) rejected by nav2"
     if status == GOAL_SUCCEEDED:
+        if distance is not None and distance > ARRIVAL_TOLERANCE_M:
+            return (f"goal ({x:.2f}, {y:.2f}) not reached: nav2 reported "
+                    f"success {distance:.1f} m from the goal")
         return None
     if status == GOAL_ABORTED:
         return (f"goal ({x:.2f}, {y:.2f}) abandoned: nav2 could not reach it "
