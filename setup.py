@@ -42,7 +42,7 @@ LONG_DESCRIPTION = (HERE / "README.md").read_text(encoding="utf-8")
 
 setup(
     name="spatialdds-ros",
-    version="0.4.1",
+    version="0.4.2",
     # `spatialdds_idl18` ships alongside: the generated bindings annotate
     # nested members with their own fully-qualified names, so the package has
     # to be importable as `spatialdds_idl18` and cannot be nested inside this
