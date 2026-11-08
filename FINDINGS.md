@@ -319,3 +319,46 @@ holds the geometry; the painting itself needs nav2, and is the demo tooth's
 first arm, which failed on the unaligned mask and passed on the aligned one.
 Upstream, this is nav2's to document or fix; filed here so the next consumer
 of a filter does not rediscover it.
+
+## 15. To retire what a restarted asserter held, it must first assert it again
+
+*Filed 2026-11-08, from concluding the claims tooth on SpatialDDS-demo's live
+tier. Affects 0.5.0. Not fixed in this release.*
+
+The tooth's test camera was SIGKILLed, by design, so its spill entity and its
+OBSERVED claim stood on the live bus with their writer gone. Ending them
+properly meant a terminal RETIRED sample with a reason, then the dispose. A
+relaunched process under the same asserter identity holds nothing, and
+`ObstaclePublisher` retires only what it holds: `withdraw()` returns False for
+a claim id it never wrote, and `lost()` returns 0 for a track it never saw. So
+the conclusion script had to re-assert both before ending them:
+
+```python
+eid = cam.observed("spill-1", SPILL["x"], SPILL["y"], length=SPILL["length"],
+                   width=SPILL["width"], height=0.05, ...)
+rid = cam.claim("spill-1", NEAR_5M, POND)
+cam.withdraw(rid, "test concluded", ASSERTER_STOPPED)
+cam.lost("spill-1", "test concluded")
+```
+
+`observed()` writes an ACTIVE OBSERVED record and a fresh pose; `claim()`
+writes a CREATED edge. For the milliseconds before the withdrawal, the wire
+says a camera is seeing a spill that nobody is seeing, and a claim about it
+newly made. It did no harm here: the lane's KEEP_LAST(1) delivered the RETIRED
+sample alone to the recorder, and the robot node, ticking at 10 Hz, never drew
+the region. That is timing, not a guarantee; a reader that takes between the
+writes reads the false statement as current, and a recorder keeping every
+sample records it.
+
+**The shape of a fix:** a retirement path that takes the record's identity
+rather than a held record. Register the instance and write its terminal
+sample (the same keys, state RETIRED, the reason, `valid_until` by the cause)
+then dispose, with no live sample ever written. For an entity, the key and
+frame; for a claim, the id `edge_id` derives from (asserter, subject,
+predicate, object), which a restarted asserter can recompute. The terminal
+sample's other members would come from the caller or from the reader's last
+sample of that instance; which is the question to settle when it is built.
+
+*Origin:* `directions/claims-batch/conclude_camera.py` in SpatialDDS-demo,
+2026-11-08, a scratch script and not committed; the lines above are its
+retirement step verbatim, abbreviated where marked.
