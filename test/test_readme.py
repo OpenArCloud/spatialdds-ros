@@ -57,6 +57,7 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         "ros2 run spatialdds_ros robot_node": "test_the_ros2_fence_names_real_parameters",
         "robot: scene bare-scene": "test_the_printed_output_is_what_it_prints",
         "peers_layer:": "test_the_nav2_stanza_is_the_one_the_acceptance_ran",
+        "claims_filter:": "test_the_claims_filter_stanza_names_what_the_node_publishes",
         "test_acceptance_two_domains.py":
             "test_the_two_domain_fence_names_the_real_test_and_image",
         "A absent: path": "test_the_two_domain_output_is_what_the_test_prints",
@@ -197,6 +198,10 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         self.assertIn(f"`peer_radius_m` {config.peer_radius_m}", text)
         self.assertFalse(config.awareness)
         self.assertIsNone(config.awareness_range_m)
+        self.assertFalse(config.claims)
+        self.assertIn(f"`claims_cost` {config.claims_cost}", text)
+        self.assertIsNone(config.claims_shoulder_m)
+        self.assertEqual(config.claims_trust, ())
 
     def test_the_ros2_fence_names_real_parameters(self):
         """
@@ -246,6 +251,25 @@ class EveryFenceIsAccountedFor(unittest.TestCase):
         reach = float(re.search(r"awareness_range_m:=([\d.]+)", fence).group(1))
         self.assertTrue(ranges)
         self.assertLessEqual(reach, min(ranges))
+
+    def test_the_claims_filter_stanza_names_what_the_node_publishes(self):
+        """
+        The claims filter stanza is somebody else's configuration too. Its
+        topic must be the one the node publishes, under the node name the
+        awareness stanza uses, and its plugin the keep-out filter: the mask
+        is a keep-out mask, and the reason it is never lethal is the value,
+        not the plugin.
+        """
+        body = next(b for _l, b in fences() if "claims_filter:" in b)
+        self.assertIn('plugin: "nav2_costmap_2d::KeepoutFilter"', body)
+        topic = re.search(r'filter_info_topic: "([^"]+)"', body).group(1)
+        node = re.search(r"topic: /(\w+)/peers/cloud",
+                         next(b for _l, b in fences()
+                              if "peers_layer:" in b)).group(1)
+        self.assertEqual(topic, f"/{node}/claims/filter_info")
+        source = (REPO / "spatialdds_ros" / "robot_node.py").read_text()
+        self.assertIn('"~/claims/filter_info"', source)
+        self.assertIn('"~/claims/mask"', source)
 
     def test_the_two_domain_fence_names_the_real_test_and_image(self):
         body = next(b for _l, b in fences()

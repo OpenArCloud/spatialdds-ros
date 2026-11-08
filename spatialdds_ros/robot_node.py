@@ -22,7 +22,8 @@ import sys
 from typing import Optional
 
 from spatialdds_ros.config import (
-    DEFAULT_PEER_RADIUS_M, DEFAULT_POSE_FLOOR_HZ, Anchor, Config, ConfigError)
+    DEFAULT_CLAIMS_COST, DEFAULT_PEER_RADIUS_M, DEFAULT_POSE_FLOOR_HZ, Anchor,
+    Config, ConfigError)
 
 
 def _declare(node) -> Config:
@@ -62,6 +63,17 @@ def _declare(node) -> Config:
     node.declare_parameter("awareness_range_m", float("nan"))
     node.declare_parameter("peer_radius_m", DEFAULT_PEER_RADIUS_M)
     node.declare_parameter("awareness_types", [""])
+    # Claims. Off unless asked for; the shoulder has a NaN sentinel because
+    # "not set" must refuse to start when claims are on (`Config`). Trust
+    # rules are one string each: "<asserter> <BASIS>[,...] [<predicate> ...]".
+    node.declare_parameter("claims", False)
+    node.declare_parameter("claims_trust", [""])
+    node.declare_parameter("claims_shoulder_m", float("nan"))
+    node.declare_parameter("claims_cost", DEFAULT_CLAIMS_COST)
+    # Where the mask's grid comes from: the costmap the filter is in. Not a
+    # `Config` field, because it is a fact about this robot's ROS graph and
+    # nothing the adapter publishes; nav2's own name for the global costmap.
+    node.declare_parameter("claims_costmap_topic", "/global_costmap/costmap")
     # Three separate parameters rather than one array, so a launch file that
     # sets two of them fails on the third instead of silently shipping a
     # two-element anchor.
@@ -98,7 +110,12 @@ def _declare(node) -> Config:
         pose_floor_hz=number("pose_floor_hz"),
         awareness=bool(node.get_parameter("awareness").value),
         peer_radius_m=number("peer_radius_m"),
+        claims=bool(node.get_parameter("claims").value),
+        claims_cost=int(node.get_parameter("claims_cost").value),
     )
+    shoulder = number("claims_shoulder_m")
+    if not math.isnan(shoulder):
+        kwargs["claims_shoulder_m"] = shoulder
     reach = number("awareness_range_m")
     if not math.isnan(reach):
         kwargs["awareness_range_m"] = reach
@@ -116,6 +133,9 @@ def _declare(node) -> Config:
     types = strings("awareness_types")
     if types:
         kwargs["awareness_types"] = types
+    trust = strings("claims_trust")
+    if trust:
+        kwargs["claims_trust"] = trust
     refs = strings("content_refs")
     if refs:
         kwargs["content_refs"] = refs
@@ -169,6 +189,8 @@ def main(argv=None) -> int:                                   # pragma: no cover
             self._subscribe_to_the_pose()
             self._awareness = (_AwarenessOutput(self)
                                if self.config.awareness else None)
+            self._claims = (_ClaimsOutput(self)
+                            if self.config.claims else None)
             period = 1.0 / float(self.get_parameter("rate_hz").value)
             self.create_timer(period, self._tick)
             self.get_logger().info(
@@ -270,6 +292,8 @@ def main(argv=None) -> int:                                   # pragma: no cover
                 self.get_logger().info(note)
             if self._awareness is not None:
                 self._awareness.tick()
+            if self._claims is not None:
+                self._claims.tick()
 
     class _AwarenessOutput:
         """
@@ -376,6 +400,133 @@ def main(argv=None) -> int:                                   # pragma: no cover
                         m.color.r = m.color.g = m.color.b = m.color.a = 1.0
                     out.markers.append(m)
             self._markers.publish(out)
+
+    class _ClaimsOutput:
+        """
+        The claims picture as nav2 reads it: a keep-out filter's mask.
+
+        `~/claims/mask` is an OccupancyGrid and `~/claims/filter_info` the
+        `CostmapFilterInfo` naming it, both latched, as SpatialDDS-demo's
+        keep-out node publishes its own: a filter, not an obstacle layer,
+        because a claim is somebody's statement and not this robot's sensor
+        return (an obstacle layer would raytrace it away). The mask carries
+        `claims_cost`, never 100, so the region is a cost and not a wall. The
+        README carries the filter stanza: on the global costmap, so it biases
+        the plan and leaves the controller's own local costmap alone.
+
+        **The mask is drawn on that costmap's own grid**, read off
+        `claims_costmap_topic`, and nothing is published until it has been:
+        nav2 Humble's keep-out filter paints a mask only where it lines up
+        with the costmap, and paints nothing of one that does not (finding
+        14). Measured on SpatialDDS-demo's tier: a 50 on the costmap's grid
+        is cost 127, a 99 is 251, a 0 clears it; the same 50 on a grid of its
+        own was received and left the costmap at 0.
+        """
+
+        def __init__(self, node) -> None:
+            from nav2_msgs.msg import CostmapFilterInfo
+            from nav_msgs.msg import OccupancyGrid
+            from rclpy.qos import (
+                DurabilityPolicy, QoSProfile, ReliabilityPolicy)
+
+            from spatialdds_ros.claims import ClaimsLayer, Grid, MaskCanvas
+
+            latched = QoSProfile(depth=1)
+            latched.durability = DurabilityPolicy.TRANSIENT_LOCAL
+            latched.reliability = ReliabilityPolicy.RELIABLE
+            self._node = node
+            self._layer = ClaimsLayer(node.participant, node.config)
+            self._canvas = MaskCanvas(node.config.claims_shoulder_m,
+                                      node.config.claims_cost)
+            self._Grid, self._Info = OccupancyGrid, CostmapFilterInfo
+            self._mask = node.create_publisher(
+                OccupancyGrid, "~/claims/mask", latched)
+            self._info = node.create_publisher(
+                CostmapFilterInfo, "~/claims/filter_info", latched)
+            self._mask_topic = self._mask.topic_name
+            self._signature = None
+            self._reported: dict = {}
+            self._counts: dict = {}
+            self._CostmapGrid = Grid
+            self._aligned = False
+            self._costmap_topic = str(
+                node.get_parameter("claims_costmap_topic").value)
+            node.create_subscription(
+                OccupancyGrid, self._costmap_topic, self._on_costmap, latched)
+            node.get_logger().info(
+                f"claims: the mask is drawn on {self._costmap_topic}'s grid, "
+                f"once it has been heard")
+
+        def _on_costmap(self, msg) -> None:
+            info = msg.info
+            grid = self._CostmapGrid(info.origin.position.x, info.origin.position.y,
+                              info.resolution, info.width, info.height)
+            if self._canvas.align(grid):
+                self._aligned = True
+                self._signature = None          # redraw on the new grid
+                self._node.get_logger().info(
+                    f"claims: aligned to {self._costmap_topic}, "
+                    f"{grid.width}x{grid.height} at {grid.resolution:g} m "
+                    f"from ({grid.origin_x:g}, {grid.origin_y:g})")
+
+        def tick(self) -> None:
+            import time
+            log = self._node.get_logger()
+            for note in self._layer.poll():
+                log.info(f"claims: {note}")
+            picture = self._layer.picture(time.time())
+            self._report(picture)
+            if not self._aligned:
+                return              # a mask off the costmap's grid is unseen
+            # What is drawn, not the cells it becomes: a costmap's grid is
+            # hundreds of thousands of cells, and this runs at the node's rate.
+            signature = tuple((r.claim_id, r.polygon)
+                              for r in picture.regions)
+            if signature == self._signature:
+                return
+            mask = self._canvas.render(picture.regions)
+            if mask is None:
+                return              # nothing ever claimed: no filter needed
+            self._signature = signature
+            frame = str(self._node.get_parameter("map_frame").value)
+            stamp = self._node.get_clock().now().to_msg()
+            grid = self._Grid()
+            grid.header.frame_id, grid.header.stamp = frame, stamp
+            grid.info.resolution = mask.resolution
+            grid.info.width, grid.info.height = mask.width, mask.height
+            grid.info.origin.position.x = mask.origin_x
+            grid.info.origin.position.y = mask.origin_y
+            grid.info.origin.orientation.w = 1.0
+            grid.data = list(mask.data)
+            self._mask.publish(grid)
+            info = self._Info()
+            info.header.frame_id, info.header.stamp = frame, stamp
+            info.type = 0                       # keep-out filter
+            info.filter_mask_topic = self._mask_topic
+            info.base, info.multiplier = 0.0, 1.0
+            self._info.publish(info)
+            log.info(
+                f"claims: mask {mask.width}x{mask.height} at "
+                f"{mask.resolution:g} m, {mask.marked} cell(s) at "
+                f"{self._canvas.cost}; drawing "
+                + (", ".join(f"{r.claim_id} ({r.asserter}, {r.basis})"
+                             for r in picture.regions) or "nothing"))
+
+        def _report(self, picture) -> None:
+            """Each skip reason once, when it changes; counts when they do."""
+            log = self._node.get_logger()
+            for claim_id, why in picture.skipped.items():
+                if self._reported.get(claim_id) != why:
+                    log.info(f"claims: not drawing {claim_id}: {why}")
+                    self._reported[claim_id] = why
+            for claim_id in [k for k in self._reported
+                             if k not in picture.skipped]:
+                del self._reported[claim_id]
+            counts = dict(picture.counts)
+            if counts != self._counts:
+                log.info("claims: " + ", ".join(
+                    f"{k} {v}" for k, v in sorted(counts.items())))
+                self._counts = counts
 
     class _Nav2Navigator:
         """nav2, asked properly and reported honestly."""

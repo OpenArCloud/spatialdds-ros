@@ -238,6 +238,44 @@ have read as a pass:
 
 ---
 
+## 6. Claims and perception, 0.5.0
+
+The claims layer and perception publishing (`claims-census.md`) add claims
+whose failure mode is a planner bending for the wrong asserter, a dead
+asserter still bending it, or a crash read as a retirement. Each was broken
+in the file by a scripted replace that refuses a site that is not unique,
+**the plant counted in the file before its result counted**, the named tests
+run under bash, and the file restored from its copy. Every plant landed once.
+
+| claim | injected | what failed |
+|---|---|---|
+| trust is checked | `_admitted` returns True | `test_a_rule_that_names_predicates_admits_only_those`, `test_a_trusted_asserter_on_a_basis_its_rule_does_not_name`, `test_a_trusted_observed_claim_is_drawn_and_a_strangers_is_not` |
+| an OBSERVED claim ages out on liveliness | the age-out branch disabled | `test_a_killed_asserters_observed_claim_ages_out_and_is_kept` |
+| a DECLARED claim stands | the age-out applied to every basis | `test_a_declared_claim_stands_when_its_declarer_goes` |
+| `valid_until` is honoured | the check disabled | `test_a_claim_past_its_valid_until_is_not_drawn` |
+| the oriented box wins | `demo.obb.*` ignored | `test_the_oriented_box_wins_over_the_enclosing_aabb` |
+| advice is never lethal | `claims_cost` 100 allowed | `test_a_lethal_cost_is_refused` |
+| a dropped region is drawn as gone | the canvas forgets it has drawn | `test_aligned_it_is_exactly_the_costmaps_grid` |
+| no writer disposes on exit | autodispose back on | all six audit subtests and both lanes of `test_sigkill_reads_as_writers_gone_never_as_disposed` |
+| a lost track retires before its dispose | the terminal sample not written | `test_a_lost_track_retires_with_its_reason_then_is_disposed` |
+| silence is UNOBSERVED | the cadence check disabled | `test_a_silent_track_is_unobserved_with_a_reason_and_its_claims_retire` |
+
+**One plant failed the wrong test, and the tests changed because of it.** The
+first `valid_until` plant failed its own test and
+`test_a_retired_claim_leaves_and_the_log_says_retired` beside it, which
+passed alone under the same plant. The tests of one class shared a DDS domain,
+and the `valid_until` test's latched claim, written by a raw writer, outlived
+it and reached the next test's layer: invisible while the rule held, drawn
+once the plant let a stale claim draw. A teardown that deleted the
+participants did not release it. Every claims test now takes a domain of its
+own (`_DOMAINS`, from 160), and the plant fails its own test only.
+
+**The nav2 half is SpatialDDS-demo's.** What the mask does to a costmap and a
+plan needs nav2, and is the demo's claims tooth: three arms, each with a plant
+that breaks it, recorded in that repository's `docs/ros-claims.md`.
+
+---
+
 ## Reproducing
 
 §1 and §2 are three-line edits to `spatialdds_ros/adapter.py`, described

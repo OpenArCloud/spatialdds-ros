@@ -44,17 +44,19 @@ from typing import Dict, List, Optional, Tuple
 from cyclonedds.core import InstanceState
 from cyclonedds.domain import DomainParticipant
 
-from spatialdds_idl18.spatial.core import FrameTransform, PoseSE3
+from spatialdds_idl18.spatial.core import PoseSE3
 from spatialdds_idl18.spatial.owm import (
     Entity, LifecycleState, ModelLayer, ModelPose)
 
 from spatialdds_ros import transport as tt
 from spatialdds_ros.config import Config, ConfigError
-from spatialdds_ros.frames import (
-    compose_point, frame_problem, georeference)
+from spatialdds_ros.frames import compose_point, frame_problem
+# Re-exported: it was defined here until the book moved out (0.5.0).
+from spatialdds_ros.georeferences import (  # noqa: F401
+    GEOREFERENCE_AGREEMENT_M, GeoreferenceBook)
 from spatialdds_ros.qos import MODEL_FAST, MODEL_LATCHED
 from spatialdds_ros.tempo import Tempo
-from spatialdds_ros.topics import EARTH_FIXED_FQN, Topics
+from spatialdds_ros.topics import Topics
 
 #: Spacing of the points that fill a footprint. Half nav2's usual 0.05 m cell
 #: would be finer than any costmap reads; 0.05 m marks every cell of one.
@@ -69,10 +71,6 @@ RING_STEP_M = 0.05
 #: ring itself would never clear. A quarter metre is several cells at any
 #: resolution nav2 is normally run at.
 RIM_M = 0.25
-
-#: Two georeferences for one frame that disagree by more than this are a
-#: conflict, and nothing in that frame is placed.
-GEOREFERENCE_AGREEMENT_M = 0.01
 
 
 @dataclass(frozen=True)
@@ -119,14 +117,10 @@ class Awareness:
             participant, topics.entity, Entity, MODEL_LATCHED.name)
         self._poses = tt.make_reader(
             participant, topics.pose, ModelPose, MODEL_FAST.name)
-        self._frames = tt.make_reader(
-            participant, topics.frame_transform, FrameTransform,
-            MODEL_LATCHED.name)
+        # The frames lane, read by the one book every consumer here shares.
+        self._georeferences = GeoreferenceBook(participant, config)
         self._peers: Dict[str, _Peer] = {}
         self._handles: Dict[Tuple[str, int], str] = {}
-        #: child fqn -> {transform_id: T_parent_child}
-        self._georeferences: Dict[str, Dict[str, PoseSE3]] = {}
-        self._frame_handles: Dict[int, Tuple[str, str]] = {}
         self._tempo = Tempo()
 
     # --- reading ----------------------------------------------------------
@@ -138,8 +132,7 @@ class Awareness:
             self._on_entity(sample)
         for sample in tt.take_with_state(self._poses):
             self._on_pose(sample, now)
-        for sample in tt.take_with_state(self._frames):
-            self._on_frame(sample)
+        self._georeferences.poll()
 
     def _peer_for(self, lane: str, sample) -> Optional[Tuple[str, _Peer]]:
         handle = sample.instance_handle
@@ -190,26 +183,6 @@ class Awareness:
         elif state == int(InstanceState.NotAliveNoWriters):
             peer.gone = lane
 
-    def _on_frame(self, sample) -> None:
-        handle = sample.instance_handle
-        if sample.data is not None:
-            ft = sample.data
-            if ft.parent_ref.fqn != EARTH_FIXED_FQN:
-                return                  # only georeferences compose here
-            child = ft.child_ref.fqn
-            self._georeferences.setdefault(child, {})[ft.transform_id] = \
-                ft.T_parent_child
-            if handle is not None:
-                self._frame_handles[int(handle)] = (child, ft.transform_id)
-        if (not sample.alive and handle is not None
-                and int(sample.instance_state)
-                == int(InstanceState.NotAliveDisposed)):
-            # A retracted georeference is a removal, §2.14. A writer that
-            # merely left is not: a venue's claim about its frame stands.
-            child, tid = self._frame_handles.get(int(handle), (None, None))
-            if child is not None:
-                self._georeferences.get(child, {}).pop(tid, None)
-
     # --- deciding ---------------------------------------------------------
 
     def georeferences(self) -> Tuple[Dict[str, PoseSE3], Dict[str, str]]:
@@ -218,24 +191,10 @@ class Awareness:
 
         This robot's own anchor counts for its own frame when nothing on the
         bus does — normally its own adapter's transform arrives here anyway.
+        The book is `georeferences.GeoreferenceBook`, shared with the claims
+        layer.
         """
-        book: Dict[str, PoseSE3] = {}
-        conflicts: Dict[str, str] = {}
-        for child, claims in self._georeferences.items():
-            poses = list(claims.values())
-            if not poses:
-                continue
-            spread = max(math.dist(poses[0].t, p.t) for p in poses)
-            if spread > GEOREFERENCE_AGREEMENT_M:
-                conflicts[child] = (
-                    f"{len(poses)} georeferences for {child!r} disagree by "
-                    f"{spread:.2f} m")
-            else:
-                book[child] = poses[0]
-        own = self.config.frame_id
-        if own not in book and own not in conflicts and self.config.anchor:
-            book[own] = georeference(own, self.config.anchor).T_parent_child
-        return book, conflicts
+        return self._georeferences.book()
 
     def picture(self, robot_xy: Optional[Tuple[float, float]],
                 now: Optional[float] = None) -> Picture:

@@ -3,7 +3,8 @@
 Make a ROS 2 robot a SpatialDDS participant: its pose published as a
 `spatial.owm` entity on scene-scoped topics, `goto` commands consumed from
 `ModelCommand` and dispatched to nav2, its presence announced, and — when
-asked — the scene's other moving entities put into its own costmap. All on the
+asked — the scene's other moving entities and its trusted claims put into
+its own costmap, and what it sees published as claims of its own. All on the
 same DDS bus ROS already runs on: one pip install makes a robot seen,
 steerable and aware, including of robots in other ROS domains it shares no
 middleware with.
@@ -33,7 +34,7 @@ The split runs through the whole package:
 
 Only `spatialdds_ros.robot_node` requires a ROS 2 environment. It imports
 `rclpy` inside its entry point rather than at module scope, which is what
-lets the other thirteen modules — and the entire test suite — run on a machine
+lets the other sixteen modules — and the entire test suite — run on a machine
 that has never had ROS installed.
 
 **That claim is a gate, not a promise.**
@@ -211,6 +212,81 @@ but the wire gives a consumer no way to know what a foreign one promises
 ([`docs/spec-queue.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/spec-queue.md)
 §3).
 
+## A robot that reads the scene's claims
+
+```sh
+ros2 run spatialdds_ros robot_node --ros-args \
+    -p scene:=bare-scene \
+    -p entity_id:=ent:robot:b \
+    -p frame_id:=map/bare-scene \
+    -p claims:=true \
+    -p claims_trust:="['svc:hazard:plaza-cam OBSERVED']" \
+    -p claims_shoulder_m:=0.5
+```
+
+The node reads the scene's relationship lane (`oarc.relationship`, the OWM
+0.2 prototype's) and draws each **trusted** claim's subject, its footprint
+plus `claims_shoulder_m`, into `~/claims/mask`, a nav2 keep-out filter mask
+at `claims_cost` (50 of 100). nav2 needs one more filter on the global
+costmap:
+
+```yaml
+claims_filter:
+  plugin: "nav2_costmap_2d::KeepoutFilter"
+  enabled: true
+  filter_info_topic: "/robot_b/claims/filter_info"
+```
+
+Add `claims_filter` to the global costmap's `filters`. On the global costmap
+only: a claim bends the plan, and the controller's local costmap, what the
+robot itself decides to drive through, stays its own.
+
+**Claims are advice.** A drawn region raises the cost of planning through it;
+it is never lethal (`claims_cost` 100 is refused), so a planner prefers to go
+round and can still go through when nothing else reaches the goal. Nothing in
+this library moves a robot because somebody else said so.
+
+**Whose claims.** `claims_trust` is required with claims on, one rule per
+string: `"<asserter> <BASIS>[,<BASIS>...] [<predicate> ...]"`. A claim is
+drawn only when a rule names its asserter, its basis and, if the rule lists
+any, its predicate; everything else on the lane is ignored, and the log says
+so once per claim. The asserter is the claim's own `asserter` member, which
+nothing on the wire authenticates yet (finding 13).
+
+**Until when.** A claim is drawn while it is in force: not retired, not
+disposed, not past its own `valid_until`. An **OBSERVED** claim also stops
+being drawn when its asserter's liveliness ends, which is the freshness term
+the wire carries: an observation nobody is still making is not about the
+present. It is kept, not treated as retired, and drawn again when its asserter
+is heard from. A **DECLARED** claim stands until withdrawn.
+
+**Where.** The subject's oriented box when it carries the crossing scene's
+`demo.obb.*` meta (centred on its pose, turned by its yaw), else its `Aabb3`;
+a subject with neither is skipped, never guessed. Another frame is composed
+through both georeferences, the book awareness uses.
+
+**On the costmap's grid.** The mask is drawn on the grid of
+`claims_costmap_topic` (default `/global_costmap/costmap`), and nothing is
+published until that has been heard: nav2 Humble's keep-out filter paints a
+mask only where it lines up with its costmap (finding 14).
+
+The reasoning, and the measurements, are in
+[`docs/claims-census.md`](https://github.com/OpenArCloud/spatialdds-ros/blob/main/docs/claims-census.md).
+
+### What it sees, as claims of its own
+
+`spatialdds_ros.perception.ObstaclePublisher` is the other direction: this
+robot as an asserter. No detector; the caller hands it tracks.
+`observed(track, x, y, length=, width=)` publishes an OBSERVED `FAST` entity,
+`ent:<robot>:<track>`, with the box as an enclosing `Aabb3` and the oriented
+dimensions as `demo.obb.*`; `claim(track, predicate, object)` holds an
+OBSERVED claim about it. A track not refreshed within its own cadence goes
+`UNOBSERVED`, with a reason, and its claims retire `subject unobserved`;
+`lost()` and `withdraw()` retire with a terminal sample and its reason, then
+dispose; `close()` withdraws everything, `asserter stopped`. A killed process
+withdraws nothing: no writer here disposes on exit, so its records stand and
+its readers see the writer go.
+
 ## Configuration
 
 Three parameters have no default and the node refuses to start without them,
@@ -225,8 +301,11 @@ because every possible default would be a false statement about the world:
 Everything else has one: `domain` 0, `ground_z` 0.0, `pose_source` tf,
 `nav2_action` navigate_to_pose, `source_id` derived from `entity_id`,
 `content_refs` and `external_refs` empty, `pose_floor_hz` 2.0, `awareness`
-off, `peer_radius_m` 0.3, `awareness_types` empty. One more has none, and is
-needed only with awareness on: `awareness_range_m`, for the reason above.
+off, `peer_radius_m` 0.3, `awareness_types` empty, `claims` off,
+`claims_cost` 50, `claims_costmap_topic` /global_costmap/costmap. One more has
+none, and is needed only with awareness on: `awareness_range_m`, for the
+reason above. Two have none and are needed only with claims on:
+`claims_trust` and `claims_shoulder_m`.
 
 ### What the robot *is*, and what it is *also known as*
 

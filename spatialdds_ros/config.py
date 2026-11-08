@@ -73,6 +73,25 @@ DEFAULT_POSE_FLOOR_HZ = 2.0
 #: entity that carries its own extent is drawn by that instead.
 DEFAULT_PEER_RADIUS_M = 0.3
 
+#: How heavily a trusted claim weighs on the planner: the value a claim's
+#: region carries in the claims layer's costmap-filter mask, on the
+#: OccupancyGrid's 0..100 scale (nav2 maps 1..99 linearly onto its own cost
+#: range; 100 is lethal).
+#:
+#: **Advisory, so never lethal** (`docs/claims-census.md`). A claim is a
+#: stranger's statement about the world, and this robot's own stack decides
+#: what to do about it: the region raises the cost of planning through it, so
+#: a planner prefers to go round and can still go through when nothing else
+#: reaches the goal. A lethal region would turn the statement into a command,
+#: which is the one thing this layer is ruled never to do; `claims_cost` is
+#: refused at 100. 50 is a documented default rather than a claim about
+#: anything: it is a statement about how much to weigh advice, measured to
+#: move nav2's NavFn round a two-metre region on SpatialDDS-demo's tier.
+DEFAULT_CLAIMS_COST = 50
+
+#: The four `spatial.owm.Basis` names, the only words a trust rule can use.
+BASES = ("OBSERVED", "DECLARED", "AUTHORED", "DERIVED")
+
 #: The IDL's bounds on the two reference sequences
 #: (`sequence[str, 8]` and `sequence[KV, 8]` on `spatial.owm.Entity`).
 #: Named here so a refusal can cite the limit rather than just report a
@@ -122,6 +141,71 @@ class Anchor:
                 f"lon_deg {self.lon_deg} is outside [-180, 180]")
         if problems:
             raise ConfigError("; ".join(problems))
+
+
+@dataclass(frozen=True)
+class TrustRule:
+    """
+    One asserter whose claims this robot will plan by, and on which bases.
+
+    The crossing scene's consumption rule (SpatialDDS-demo
+    `docs/crossing-claims.md`, its controllers' `TRUSTED`), generalized: a
+    claim is honoured only when its asserter is named here *and* its basis is
+    one this rule accepts, and, if the rule names predicates, only for those.
+    Everything else on the lane is ignored. There is no wildcard asserter:
+    "trust whoever writes" is not a rule, it is the absence of one.
+
+    Written as one string for a launch file::
+
+        "<asserter> <BASIS>[,<BASIS>...] [<predicate> ...]"
+        "svc:hazard:cam-1 OBSERVED"
+        "svc:crossing:gate-ctl-9 DECLARED https://demo.spatialdds.org/ns/closes"
+
+    The asserter is the claim's own `asserter` member, which is the
+    publishing participant's service id by the prototype's convention, and
+    not established by the transport. A rule can therefore be met by anyone
+    willing to type that name (`FINDINGS.md`, finding 13).
+    """
+
+    asserter: str
+    bases: Tuple[str, ...]
+    predicates: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "bases", tuple(self.bases or ()))
+        object.__setattr__(self, "predicates", tuple(self.predicates or ()))
+        problems = []
+        if not self.asserter or not self.asserter.strip():
+            problems.append("a trust rule names no asserter")
+        if not self.bases:
+            problems.append(
+                f"the trust rule for {self.asserter!r} names no basis; a rule "
+                f"that accepts nothing is a rule nobody meant to write")
+        for basis in self.bases:
+            if basis not in BASES:
+                problems.append(
+                    f"{basis!r} in the trust rule for {self.asserter!r} is not "
+                    f"a basis; expected one of {', '.join(BASES)}")
+        if problems:
+            raise ConfigError("; ".join(problems))
+
+    @classmethod
+    def parse(cls, text: str) -> "TrustRule":
+        words = str(text).split()
+        if len(words) < 2:
+            raise ConfigError(
+                f"trust rule {text!r}: expected '<asserter> <BASIS>[,...] "
+                f"[<predicate> ...]'")
+        return cls(words[0], tuple(b for b in words[1].split(",") if b),
+                   tuple(words[2:]))
+
+    def admits(self, asserter: str, basis: str, predicate: str) -> bool:
+        return (asserter == self.asserter and basis in self.bases
+                and (not self.predicates or predicate in self.predicates))
+
+    def __str__(self) -> str:
+        return " ".join((self.asserter, ",".join(self.bases),
+                         *self.predicates))
 
 
 @dataclass(frozen=True)
@@ -183,6 +267,23 @@ class Config:
     #: fleet number. Same rule — only what was configured.
     external_refs: Tuple[Tuple[str, str], ...] = ()
 
+    #: The scene's claims, as an advisory costmap-filter mask (0.5.0).
+    #: `docs/claims-census.md` is the reasoning; the README carries the nav2
+    #: filter stanza the mask needs.
+    claims: bool = False
+    #: **Required when claims are on**: whose claims to plan by, and on which
+    #: bases. A layer trusting nobody draws nothing, and looks exactly like
+    #: one with nothing to draw.
+    claims_trust: Tuple[TrustRule, ...] = ()
+    #: **No default, and refused when claims are on without it.** The
+    #: clearance this robot wants round a claimed region: its own radius plus
+    #: a margin. The region is robot-agnostic and this library cannot read
+    #: the operator's nav2 footprint; with none, a shortest-path planner
+    #: shaves the region's edge (measured for SpatialDDS-demo's keep-out, a
+    #: legal path 0.10 m from the water that no controller could drive).
+    claims_shoulder_m: Optional[float] = None
+    claims_cost: int = DEFAULT_CLAIMS_COST
+
     def __post_init__(self) -> None:
         # A launch file or a dict will hand these over as lists. The dataclass
         # is frozen, so they are normalised to tuples here rather than stored
@@ -195,6 +296,9 @@ class Config:
         object.__setattr__(self, "external_refs",
                            tuple(tuple(pair) for pair in
                                  (self.external_refs or ())))
+        object.__setattr__(self, "claims_trust", tuple(
+            rule if isinstance(rule, TrustRule) else TrustRule.parse(rule)
+            for rule in (self.claims_trust or ())))
         problems: list[str] = []
 
         # The three with no honest default. Reported together, and each with
@@ -255,6 +359,31 @@ class Config:
                 problems.append(
                     f"peer_radius_m {self.peer_radius_m} must be positive: a "
                     f"peer drawn with no size is not drawn")
+        if self.claims:
+            if not self.claims_trust:
+                problems.append(
+                    "claims_trust is required when claims are on: name each "
+                    "asserter whose claims this robot may plan by, and the "
+                    "bases accepted from it. A layer that trusts nobody "
+                    "draws nothing, and looks exactly like one with nothing "
+                    "to draw")
+            if self.claims_shoulder_m is None:
+                problems.append(
+                    "claims_shoulder_m is required when claims are on: the "
+                    "clearance this robot wants round a claimed region, its "
+                    "own radius plus a margin. This library cannot read your "
+                    "nav2 footprint, and with no shoulder a planner shaves "
+                    "the region's edge")
+            elif not self.claims_shoulder_m >= 0.0:
+                problems.append(
+                    f"claims_shoulder_m {self.claims_shoulder_m} must not be "
+                    f"negative")
+            if not 1 <= int(self.claims_cost) <= 99:
+                problems.append(
+                    f"claims_cost {self.claims_cost} must be 1..99: 0 draws "
+                    f"nothing, and 100 is lethal, which would make a "
+                    f"stranger's claim a wall this robot may not cross. "
+                    f"Claims are advice; the robot's own stack decides")
         if self.domain < 0 or self.domain > 232:
             problems.append(
                 f"domain {self.domain} is outside the DDS range [0, 232]")
@@ -356,6 +485,13 @@ class Config:
                 f"each one with no extent drawn as a {self.peer_radius_m:g} m "
                 f"disc" + (f", only types {', '.join(self.awareness_types)}"
                            if self.awareness_types else ""))
+        if self.claims:
+            notes.append(
+                f"claims on: trusted claims become an advisory region in "
+                f"~/claims/mask (cost {self.claims_cost} of 100, never "
+                f"lethal), {self.claims_shoulder_m:g} m shoulder; trusting "
+                + "; ".join(str(rule) for rule in self.claims_trust)
+                + ". Every other claim on the lane is ignored")
         if self.pose_source == "odom":
             notes.append(
                 "pose_source is odom: odom drifts against map, so this "

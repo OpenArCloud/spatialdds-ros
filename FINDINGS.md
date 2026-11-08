@@ -236,3 +236,86 @@ refuses at exactly the tolerance fails one. The wiring in the node, which
 needs rclpy, was not run against the nav2 tier for this release; the demo's
 `claims-stack.spec.ts` waits for the robot to stand still before a goal, so
 it no longer provokes the preemption either.
+
+## 13. A trust rule names an asserter that nothing authenticates
+
+*Filed 2026-11-08, building the claims layer for SpatialDDS-demo's claims
+batch. Affects 0.5.0 by design, and every consumer of the relationship lane.*
+
+`claims_trust` admits a claim by its `asserter` member. That member is the
+publishing participant's service id **by the prototype's convention**
+(SpatialDDS-demo `spatialdds_demo/claims.py`: "the asserter is the
+participant's `service_id`, the convention until transport identity carries
+more"), and it is a string in the payload. Any participant on the domain can
+type `svc:hazard:plaza-cam` into it, and the layer will draw the claim.
+
+The filter arm of the demo's claims tooth shows the rule doing its work
+against an honest stranger, which is the case it can handle: a different
+asserter name is ignored. It cannot handle a dishonest one, and no consumer in
+this family can, because nothing on the wire binds the name to the writer.
+
+**Not closable here.** The layer has nothing to check the name against. The
+web binding design note's fourth carrier obligation ("the asserter on a record
+is established by the transport or the credential, never typed into the
+payload") is the fix, for the binding by credential and for DDS by DDS
+Security's authenticated participant identity. Filed to the 0.2 register as
+consumption-semantics evidence (demo `docs/ros-claims.md` §6). Until then the
+README says plainly that a trust rule is met by anyone willing to type the
+name, and the advisory rule bounds the damage: a forged claim can bend a
+plan, and cannot make a region lethal.
+
+## 14. nav2 paints a keep-out mask only on its costmap's grid
+
+*Filed 2026-11-08, measured on SpatialDDS-demo's nav2 tier (ros-humble
+nav2_costmap_2d 1.1.20). Found and closed in 0.5.0 before release.*
+
+The claims layer's first mask covered the regions it drew, at 0.05 m, with an
+origin of its own. nav2's filter logged it received; the global costmap's cost
+at the claimed hazard stayed **0**, and the plan went straight through. With
+the same filter fed by hand, masks of 50, 99 and 100 over the hazard all left
+the cost at 0, and the venue's own keep-out beside it stayed 254: the filter
+was working, and painting nothing of this mask.
+
+**The mechanism, measured rather than read:** the filter repaints a window
+that starts at the **costmap's** origin and is as many cells wide and high as
+the **mask**, counted at the costmap's resolution. It assumes the mask and the
+costmap are one grid, as a filter mask served by `map_server` beside the map
+is. Four masks, each with the same 3 x 3 m block of 50 at the hazard and an
+origin of their own at (22.5, -24.5), 0.05 m cells, published in this order
+into a fresh tier whose global costmap is 850 x 733 at 0.1 m from
+(-30.5, -49.0):
+
+```
+mask cells   window from the costmap origin reaches   cost at the hazard (24, -23)
+  60 x  60   (-24.5, -43.0)                           0
+ 600 x  60   ( 29.5, -43.0)                           0
+  60 x 300   (-24.5, -19.0)                           0
+ 600 x 300   ( 29.5, -19.0)                           127
+```
+
+Painted only when that window covers the hazard in both axes. An earlier run
+in another order showed the consequence for clearing: after the 600 x 300 mask
+painted 127, a 600 x 60 mask, whose window does not reach the hazard, left
+the 127 standing. So a mask off the costmap's grid both fails to draw a claim
+and fails to clear one. The demo's keep-out node never met this because it
+republishes the venue canvas with every mask, and a new static map repaints
+everything.
+
+Drawn on the costmap's own grid, the same filter painted a 50 as cost 127, a
+99 as 251, and a 0 back to 0:
+
+```
+aligned mask 50: global cost at (24,-23) = 127, (24,-27) = 0, pond = 254
+aligned mask 0:  global cost at (24,-23) = 0,   (24,-27) = 0, pond = 254
+aligned mask 99: global cost at (24,-23) = 251, (24,-27) = 0, pond = 254
+```
+
+**Fixed in 0.5.0:** the node reads the grid off `claims_costmap_topic`
+(default `/global_costmap/costmap`), `MaskCanvas.align` renders every mask on
+it, and nothing is published until it has been heard. The mask then repaints
+the whole costmap on each change, which is also what lets a dropped claim's
+cells go back to free. `test_claims.py::test_aligned_it_is_exactly_the_costmaps_grid`
+holds the geometry; the painting itself needs nav2, and is the demo tooth's
+first arm, which failed on the unaligned mask and passed on the aligned one.
+Upstream, this is nav2's to document or fix; filed here so the next consumer
+of a filter does not rediscover it.
