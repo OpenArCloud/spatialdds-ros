@@ -30,7 +30,7 @@ EARTH_FIXED_FQN = "earth-fixed"
 
 @dataclass(frozen=True)
 class Topics:
-    """The four lanes this library uses, for one scene."""
+    """The lanes this library uses, for one scene."""
 
     scene: str
 
@@ -54,6 +54,19 @@ class Topics:
         """Where the scene's frames sit relative to one another."""
         return f"spatialdds/{self.scene}/frames/frame_transform/v1"
 
+    @property
+    def relationship(self) -> str:
+        """
+        Claims: one asserter's edge between two entities (0.5.0).
+
+        `oarc.relationship`, the OWM 0.2 prototype's type, which is a
+        deployment extension (§3.3.2) and not a spec type; its bindings are
+        vendored beside the spec's (`spatialdds_idl18/PROVENANCE.md`). The
+        name is the one SpatialDDS-demo's asserters publish on, by the same
+        grammar, so this library reads the lane they write.
+        """
+        return f"spatialdds/{self.scene}/world/oarc.relationship/v1"
+
     def all(self) -> dict[str, str]:
         """Every name, for a startup banner and for the tests to check."""
         return {
@@ -61,4 +74,5 @@ class Topics:
             "pose": self.pose,
             "command": self.command,
             "frame_transform": self.frame_transform,
+            "relationship": self.relationship,
         }

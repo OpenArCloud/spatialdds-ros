@@ -9,11 +9,39 @@ be lost the next time they are regenerated.
 | IDL source | `idl/v1.8/` in `OpenArCloud/SpatialDDS-spec`, at `9c3e1f2` (2026-10-15) |
 | generator | `scripts/generate_types.py` in `OpenArCloud/SpatialDDS-demo` |
 | vendored from | that repo's `spatialdds_idl18/` at `cf4ec23` |
-| files | 64 |
+| files | 64 (spec), plus `oarc_owm/` below |
 
 The spec's `idl/v1.8` and the demo's copy were verified byte-identical at the
 time of vendoring, so these bindings correspond to the specification's IDL and
 not to a demo-local variant.
+
+## `oarc_owm/`, added for 0.5.0
+
+| | |
+|---|---|
+| IDL source | `idl/demo18/oarc_owm02.idl` in `OpenArCloud/SpatialDDS-demo`, last changed at `1ec36ca` |
+| spec IDL beside it | the same `idl/v1.8` at `9c3e1f2` as the table above |
+| generator | the same `scripts/generate_types.py`, its `generate()` with the package `spatialdds_idl18` |
+| files | 3 (two modules and idlc's `.idlpy_manifest`, as every package here carries), and one import in this tree's `__init__.py` |
+
+**Not a spec type.** `oarc.relationship` is the OWM 0.2 relationship
+prototype, a deployment extension (§3.3.2) that SpatialDDS-demo registers and
+its asserters publish; this library reads that lane for its claims layer and
+writes it for perception publishing. It is vendored beside the spec's types
+because there is nowhere else to get it, and it carries nothing the spec is
+asked to adopt.
+
+**Generated, not copied, and the run is its own check.** The generator was
+run over the spec IDL at `9c3e1f2` together with `oarc_owm02.idl`, into a
+scratch `spatialdds_idl18`. Every spec file it produced was byte-identical to
+the 64 already vendored here (`diff -r`, `__pycache__` and `oarc_owm`
+excluded), and `_field_aliases.py` too; the only differences were the new
+`oarc_owm/` and its import in `__init__.py`. That one run reproduces this
+tree and adds the module, so the new module comes from the same generator
+and the same spec bytes as everything beside it. Its minimal XTypes
+identifiers for `Relationship` and `EvidenceRef` equal those of
+SpatialDDS-demo's own `spatialdds_demo_idl18.oarc_owm`, which is what DDS
+matches on; the demo's `tests/test_idl_trees_agree.py` now holds them there.
 
 ## Why vendored rather than depended on
 

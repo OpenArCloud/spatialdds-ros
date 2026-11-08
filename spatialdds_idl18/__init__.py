@@ -4,6 +4,7 @@
 """Generated SpatialDDS 1.7 types. See scripts/generate_types.py."""
 
 from . import builtin
+from . import oarc_owm
 from . import spatial
 
-__all__ = ["builtin", "spatial"]
+__all__ = ["builtin", "oarc_owm", "spatial"]
